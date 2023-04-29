@@ -5,32 +5,40 @@
 
 template<typename T>
 class Grid {
-private:
-
-	int num_neighs(int x, int y);
 
 protected:
-	int height, width, total;
-	int logheight, logwidth;
-	T* value;
-	T* aux_grid;
+	int height, width, depth, total;
+	int logheight, logwidth, logdepth;
+	T* value;							// pointer to array holding the main data
+	T* aux_grid;						// auxiliary array of the same size, for computations
+
+	virtual void CreateData();
+	virtual void DestroyData();
 
 public:
 
-	~Grid();
-	Grid();
-
 	Grid(int h, int w);
+	Grid(int h, int w, int d);
+	virtual ~Grid();
 
-	T get(int x, int y);
-	int get_height();
-	int get_width();
-	int size();
-	void set(int x, int y, T v);
-	void randomize(int, int);
+	int get_height() const noexcept { return height; }
+	int get_width() const noexcept { return width; }
+	int get_depth() const noexcept { return depth; }
+
+	int size() const noexcept { return total; }
+
+	virtual T get(int x, int y);
+	virtual T get(int x, int y, int z);
+	virtual void set(int x, int y, T v);
+	virtual void set(int x, int y, int z, T v);
+	virtual void randomize(int, int);
+	virtual void evolve();
+
 	void setup();
 
-	void evolve();
+private:
+
+	T num_neighs(int x, int y);
 };
 
 #include "grid.tpp"

@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="winmain.cpp">
+    <ClCompile Include="main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="mainapp.cpp">
@@ -30,13 +30,10 @@
     <ClCompile Include="grid.tpp">
       <Filter>Headers</Filter>
     </ClCompile>
-    <ClCompile Include="lengrid.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="cmap.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="fft.cpp">
+    <ClCompile Include="lengrid.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -59,7 +56,7 @@
     <ClInclude Include="cmap.h">
       <Filter>Headers</Filter>
     </ClInclude>
-    <ClInclude Include="fft.h">
+    <ClInclude Include="resource.h">
       <Filter>Headers</Filter>
     </ClInclude>
   </ItemGroup>
@@ -67,5 +64,10 @@
     <Image Include="icons.bmp">
       <Filter>Resource Files</Filter>
     </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Leniascope.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
   </ItemGroup>
 </Project>

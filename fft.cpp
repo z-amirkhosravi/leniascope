@@ -1,285 +1,320 @@
 #include "fft.h"
 #include <complex>
+#include <iostream>
 
-#define M_PI 3.14159265358979323846
-#define M_I std::complex<double>(0,1)
+namespace fft {
 
-FFT::FFT(int n): size(n){
-	arrsize = 1 << n;
+	const double pi = 3.14159265358979323846;
 
-	bit_reverse_dict = new int[arrsize];
+	// these constants are there to make the formulas in the code more readable
 
-	roots = new std::complex<double>[arrsize];
-	invroots = new std::complex<double>[arrsize];
-	buff = new std::complex<double>[arrsize];
+	const std::complex<double> complex_i = std::complex<double>(0, 1);
+	const std::complex<double> one_half = std::complex<double>(0.5, 0);
+	const std::complex<double> half_i = std::complex<double>(0, 0.5);
 
-	fill_bit_reverse_dict();
-	fill_roots();
-}
+	// FFT::FFT(int n)
 
-FFT::~FFT() {
-delete[] roots;
-delete[] bit_reverse_dict;
-delete[] buff;
-}
+	// initializes the (one-dimensional) discrete fourier transformer for input data of size 2^n
 
-void FFT::fill_roots() {/*
-	const std::complex<double> M_I(0.0, 1.0);*/
+	FFT::FFT(int n) : size(n) {
 
-	std::complex<double> w = exp( ((double) 2 / arrsize) * M_PI * M_I );
+		arrsize = 1 << n;
 
-	roots[0] = 1;
-	invroots[0] = 1;
-	for (int i = 1; i < arrsize / 2; i++) {
-		roots[i] = roots[i - 1] * w;
-		invroots[i] = invroots[i - 1] / w;
-	}
-}
+		try {
+			bit_reverse_dict = new int[arrsize];
 
-void FFT::fill_bit_reverse_dict() {
-
-	for (int n = 0; n < arrsize; n++) {
-
-		int r = 0, temp = n;
-		for (int i = 0; i < size; i++) {	
-			r *= 2;
-			r += (temp % 2);
-			temp /= 2;
+			roots = new std::complex<double>[arrsize];
+			invroots = new std::complex<double>[arrsize];
+			buff = new std::complex<double>[arrsize];
+		} catch (std::bad_alloc) {
+			std::cerr << "Unable to allocate memory for FFT.\n";
+			std::abort();
 		}
-		bit_reverse_dict[n] = r;
+
+		fill_bit_reverse_dict();
+		fill_roots();
 	}
-}
 
-/* the bit_reverse and transform methods can traverse the data by a given step size, to facilitate computing 
-2D transforms by applying 1D transforms to "rows" and "columns" in serialized data */
+	FFT::~FFT() {
+		delete[] roots;
+		delete[] invroots;
+		delete[] bit_reverse_dict;
+		delete[] buff;
+	}
 
-void FFT::bit_reverse(std::complex<double>* data, int step = 1) {		// assumes data is pointer to arrsize many complex numbers
-	std::complex<double> temp;
-	int temp_int;
+	// fill_roots() 
+	//
+	// fills the array "roots" (and "invroots") with arrsize_th roots of unity (and their inverses) 
+	// needed to perform discrete fourier transforms
 
-	for (int n = 1; n < arrsize; n++) {
-		if (bit_reverse_dict[n] == n)
-			bit_reverse_dict[n] = -n;
-		else if (bit_reverse_dict[n] > 0) {
-			temp = data[n * step];
-			data[n * step] = data[bit_reverse_dict[n] * step];
-			data[bit_reverse_dict[n] * step] = temp;
+	void FFT::fill_roots() {
 
-			temp_int = bit_reverse_dict[n];			
-			bit_reverse_dict[n] = -temp_int;	// change sign to indicate already swapped data at tshose indices
-			bit_reverse_dict[temp_int] = -bit_reverse_dict[temp_int];
+		std::complex<double> w = exp(((double)2 / arrsize) * pi * complex_i);		// a primitive arrsize_th root of unity
+
+		roots[0] = 1;
+		invroots[0] = 1;
+		for (int i = 1; i < arrsize / 2; i++) {
+			roots[i] = roots[i - 1] * w;
+			invroots[i] = invroots[i - 1] / w;
 		}
 	}
 
-	for (int n = 1; n < arrsize; n++)
-		bit_reverse_dict[n] = -bit_reverse_dict[n];				// change signs back
-}
+	// fill_bit_reverse_dict() 
+	//
+	// fills the array "bit_reverse_dict", entering the appropriate bit reversal of n at the nth index
 
-/* This method computes the DFT of the input data vector by repeatedly applying matrices B_1, B_2, ..., B_(n-1), 
-  where B_n = diag(A_n, A_n, ..., A_n),
+	void FFT::fill_bit_reverse_dict() {
 
-			|  I_n   I_n  |
- where A_n = |			  |,
-			|  S_n  -S_n  |
+		for (int n = 0; n < arrsize; n++) {
 
- I_n is the identity matrix, and S_n = diag(1, z_n, z_n^2, ..., z_n^(n-1)), z_n = exp(2 * pi * i / 2n).
+			int r = 0, temp = n;
+			for (int i = 0; i < size; i++) {
+				r *= 2;
+				r += (temp % 2);
+				temp /= 2;
+			}
+			bit_reverse_dict[n] = r;
+		}
+	}
 
-*/
+	/* the bit_reverse and transform methods can traverse the data by a given step size, to facilitate computing
+	2D transforms by applying 1D transforms to "rows" and "columns" in data that's been serialized into 1D array */
 
+	void FFT::bit_reverse(std::complex<double>* data, int step = 1) {		// assumes data is pointer to arrsize-many complex numbers
+		std::complex<double> temp;
+		int temp_int;
 
+		// this algorithm changes the sign of the indices in the bit_reversed_dict array to indicate a swap has already happened
+		// so we can avoid swapping twice
 
-void FFT::transform(std::complex<double>* data, int step = 1) {
-	int block_size = 1;											// will go up to 2 ** (size - 1) in powers of two
-	int cur_block_idx;
-	int co_block_size = arrsize / 2;							// will be 2 ** (size - block_size - 1) in the loop
-	int root_idx = 0;											// index tracking roots of unity
+		for (int n = 1; n < arrsize-1; n++) {		
+			if (bit_reverse_dict[n] == n)			
+				bit_reverse_dict[n] = -n;
+			else if (bit_reverse_dict[n] > 0) {
+				std::swap(data[n * step], data[bit_reverse_dict[n] * step]);
 
-	std::complex<double> temp, temp2;
-
-	bit_reverse(data, step);
-
-	for (int k = 0; k < size; k++) {
-		for (int x = 0, cur_block_idx = 0; x < co_block_size; x++, cur_block_idx += 2 * block_size) {
-			for (int y = 0, root_idx = 0; y < block_size; y++, root_idx += co_block_size) {
-				int idx = step * (cur_block_idx + y);
-				int idx2 = step * (cur_block_idx + block_size + y);
-
-				temp2 = data[idx2] * roots[root_idx];		// avoid calculating this twice
-				temp = data[idx] - temp2;
-				data[idx] = data[idx] + temp2;
-				data[idx2] = temp;
+				temp_int = bit_reverse_dict[n];
+				bit_reverse_dict[n] = -temp_int;	// change sign to indicate already swapped data at tshose indices
+				bit_reverse_dict[temp_int] = -bit_reverse_dict[temp_int];
 			}
 		}
-		co_block_size = co_block_size /2;
-		block_size = block_size * 2;
+
+		for (int n = 1; n < arrsize-1; n++)
+			bit_reverse_dict[n] = -bit_reverse_dict[n];				// change all signs back
 	}
 
-	return;
+	// transform(std::complex<double> * data, int step = 1)
 
-	// this code is for a different normalization of the transform
+	// computes in place the discrete fourier transform of "data"
 	// 
-	//for (int x = 0; x < arrsize * step; x += step)                
-	//	data[x] = data[x] * ((double)(1 / sqrt(arrsize)));
-}
+	// if step is set to n, it does the same to the array consisting of {data[n], data[2*n], data[3*n], ... data[arrsize*n]}
 
-//void FFT::inverse_transform(std::complex<double>* data, int step = 1) {
-//
-//	int block_size = 1;											// will go up to 2 ** (size - 1) in powers of two
-//	int cur_block_idx;									
-//	int co_block_size;											// will be 2 ** (size - block_size - 1) in the loop
-//	int root_idx = 0;											// index tracking roots of unity
-//
-//	std::complex<double> temp, temp2;
-//
-//	co_block_size = arrsize / 2;
-//
-//	bit_reverse(data, step);
-//
-//	for (int k = 0; k < size; k++) {
-//		for (int x = 0, cur_block_idx = 0; x < co_block_size; x++, cur_block_idx += block_size*2) {
-//			for (int y = 0, root_idx = 0; y < block_size; y++, root_idx += co_block_size) {
-//
-//				int idx2 = step * (cur_block_idx + y + block_size);
-//				int idx = step * (cur_block_idx + y);
-//
-//				temp2 = data[idx2] * invroots[root_idx];		// avoid calculating this twice
-//				temp = data[idx] - temp2;
-//
-//				data[idx] = data[idx] + temp2;
-//				data[idx2] = temp;
-//			}
-//		}
-//		co_block_size = co_block_size * 2;
-//		block_size = block_size / 2;
-//	}
-//
-//	for (int x = 0; x < arrsize * step; x += step)
-//		data[x] = ((double)1 / arrsize) * data[x];
-//}
+	/* the method first permutes the input data vector by applying bit reversal 
+	   then considering the input data as a row vector, it multiplies it on the right 
+	   by matrices B_1, B_2, ..., B_(n - 1), in that order,
+	   where B_n = diag(A_n, A_n, ..., A_n),
 
-void FFT::inverse_transform(std::complex<double>* data, int step = 1) {	
+				 |  I_n   I_n  |
+	 where A_n = |			   |,
+				 |  S_n  -S_n  |
 
-	int co_block_size = arrsize / 2;
-	int block_size = 1;											
-	int root_idx = 0;			
+	 I_n  = n x n identity matrix, 
+	 
+	 S_n = diag(1, w, w^2, ..., w^(n-1)),			 w = exp(2 * pi * i / 2n).
 
-	std::complex<double> temp, temp2;
+	*/
 
-	bit_reverse(data, step);
-				
-	for (int k = 0; k < size; k++) {
-		for (int cur_block_idx = 0; cur_block_idx < arrsize;  cur_block_idx += 2 * block_size) {
-			for (int y = 0, root_idx = 0; y < block_size; y++, root_idx += co_block_size) {
-				temp2 = data[step * (cur_block_idx + y + block_size)] * invroots[root_idx];		// avoid calculating this twice
-				temp = data[step * (cur_block_idx + y)] - temp2;
-				data[step * (cur_block_idx + y)] = data[step * (cur_block_idx + y)] + temp2;
-				data[step * (cur_block_idx + block_size + y)] = temp;
+	void FFT::transform(std::complex<double>* data, int step = 1) {
+		int block_size = 1;											// will go up to 2 ** (size - 1) in powers of two
+		int cur_block_idx;
+		int co_block_size = arrsize / 2;							// will be 2 ** (size - block_size - 1) in the loop
+		int root_idx = 0;											// index tracking roots of unity
+
+		std::complex<double> temp, temp2;
+
+		bit_reverse(data, step);
+
+		for (int k = 0; k < size; k++) {
+			for (cur_block_idx = 0; cur_block_idx < arrsize; cur_block_idx += 2 * block_size) {
+				for (int y = 0, root_idx = 0; y < block_size; y++, root_idx += co_block_size) {
+					int idx = step * (cur_block_idx + y);
+					int idx2 = step * (cur_block_idx + block_size + y);
+
+					temp2 = data[idx2] * roots[root_idx];		// avoid calculating this twice
+					temp = data[idx] - temp2;
+					data[idx] = data[idx] + temp2;
+					data[idx2] = temp;
+				}
 			}
+			co_block_size /= 2;
+			block_size *= 2;
 		}
-		co_block_size = co_block_size / 2;
-		block_size = block_size * 2;
+
+		return;
+
 	}
 
-	for (int x = 0; x < arrsize * step; x += step)
-		data[x] = ((double)1 / arrsize) * data[x];
-
-	return;
-
-	// this code is for a different normalization of the transform
+	// Hartley transform
 	// 
-	//for (int x = 0; x < arrsize * step; x += step)                
-	//	data[x] = data[x] * ((double)(1 / sqrt(arrsize)));
-}
 
-/* If the data is real, the computations can be halved by exploiting symmetry */
+	void FFT::htransform(std::complex<double>* data, int step = 1) {
+		int block_size = 1;											// will go up to 2 ** (size - 1) in powers of two
+		int cur_block_idx;
+		int co_block_size = arrsize / 2;							// will be 2 ** (size - block_size - 1) in the loop
+		int root_idx = 0;											// index tracking roots of unity
 
-void FFT::transform(double* data, std::complex<double>* output, int step = 1) {
-	int block_size = 1;											// will go up to 2 ** (size - 1) in powers of two
-	int cur_block_idx;
-	int co_block_size = arrsize / 2;						
-	int root_idx = 0;											
+		std::complex<double> temp, temp2, temp3;
 
-	std::complex<double> temp, temp2;
+		bit_reverse(data, step);
 
-	/*assert(size > 2);	*/										// this algorithm doesn't make sense over Z/2Z
+		for (int k = 0; k < size; k++) {
+			for (cur_block_idx = 0; cur_block_idx < arrsize; cur_block_idx += 2 * block_size) {
+				for (int y = 0, root_idx = 0; y < block_size; y++, root_idx += co_block_size) {
+					int idx = step * (cur_block_idx + y);
+					int idx2 = step * (cur_block_idx + block_size + y);
+					int idx3 = step * (cur_block_idx + 2 * block_size - y);
 
-
-	for (int x = 0; x < arrsize / 2; x++) 
-			buff[x] = data[bit_reverse_dict[x]] + data[bit_reverse_dict[x + (arrsize / 2)]] * M_I;	// fold the real input data into a complex vector
-
-
-	co_block_size = arrsize / 4;													// run the calculation for the size - 1 case
-	for (int k = 0; k < size - 1; k++) {																		    
-		for (int cur_block_idx = 0; cur_block_idx < arrsize / 2; cur_block_idx += block_size * 2) {
-			for (int y = 0, root_idx = 0; y < block_size; y++, root_idx += 2*co_block_size) {
-				int idx = step * (cur_block_idx + y);
-				int idx2 = step * (cur_block_idx + block_size + y);
-
-				temp2 = buff[idx2] * roots[root_idx];		// most expensive step, avoid calculating twice
-				temp = buff[idx] - temp2;
-				buff[idx] = buff[idx] + temp2;
-				buff[idx2] = temp;
+					temp2 = data[idx2] * roots[root_idx].real();		// avoid calculating this twice
+					temp3 = data[idx3] * roots[root_idx].imag();
+					temp = data[idx] + temp2 - temp3;
+					data[idx] = data[idx] + temp2 + temp3;
+					data[idx2] = temp;
+				}
 			}
+			co_block_size /= 2;
+			block_size *= 2;
 		}
-		co_block_size = co_block_size / 2;
-		block_size = block_size * 2;
+
+		return;
+
 	}
 
-	output[0] = std::complex<double>(0.5, -0.5) * buff[0] + std::complex<double>(0.5, +0.5) * std::conj(buff[0]);
-	output[arrsize / 2] = std::complex<double>(0.5, +0.5) * buff[0] + std::complex<double>(0.5, -0.5) * std::conj(buff[0]);
+	// inverse_transform(std::complex<double>* data, int step = 1)
 
-	for (int x = 1; x < arrsize / 2; x++) {		
-		//output[x] = (std::complex<double>(0.5, 0) + std::complex<double>(0, -0.5) * roots[x]) * buff[x]
-		//	+ (std::complex<double>(0.5, 0) + std::complex<double>(0, 0.5) * roots[x]) * std::conj(buff[arrsize / 2 - x]);
-		output[x] = (std::complex<double>(0.5, 0) + std::complex<double>(0, -0.5) * roots[x]) * buff[x]
-			+ (std::complex<double>(0.5, 0) + std::complex<double>(0, +0.5) * roots[x]) * std::conj(buff[arrsize / 2 - x]);
+	// performs the inverse operation of transform()
+	// the algorithm is the same, except the roots of unity are replaced by their inverses,
+	// and there is a normalization step at end
 
-		output[arrsize - x] = std::conj(output[x]);				// fill second half of output by symmetry
+	void FFT::inverse_transform(std::complex<double>* data, int step = 1) {
+
+		int co_block_size = arrsize / 2;
+		int block_size = 1;
+		int root_idx = 0;
+
+		std::complex<double> temp, temp2;
+
+		bit_reverse(data, step);
+
+		for (int k = 0; k < size; k++) {
+			for (int cur_block_idx = 0; cur_block_idx < arrsize; cur_block_idx += 2 * block_size) {
+				for (int y = 0, root_idx = 0; y < block_size; y++, root_idx += co_block_size) {
+					temp2 = data[step * (cur_block_idx + y + block_size)] * invroots[root_idx];		// avoid calculating this twice
+					temp = data[step * (cur_block_idx + y)] - temp2;
+					data[step * (cur_block_idx + y)] = data[step * (cur_block_idx + y)] + temp2;
+					data[step * (cur_block_idx + block_size + y)] = temp;
+				}
+			}
+			co_block_size = co_block_size / 2;
+			block_size = block_size * 2;
+		}
+
+		for (int x = 0; x < arrsize * step; x += step)
+			data[x] = ((double)1 / arrsize) * data[x];
+
+		return;
 	}
 
-	// this code is for a different normalization of the transform
-	// 
-	//for (int x = 0; x < arrsize * step; x += step)                
-	//	data[x] = data[x] * ((double)(1 / sqrt(arrsize)));
-}
+	/* If the data is real, the computations can be halved by exploiting symmetry */
+
+	void FFT::transform(double* data, std::complex<double>* output, int step = 1) {
+		int block_size = 1;											// will go up to 2 ** (size - 1) in powers of two
+		int cur_block_idx;
+		int co_block_size = arrsize / 2;
+		int root_idx = 0;
+
+		std::complex<double> temp, temp2;
+
+		/*assert(size > 2);	*/										// this algorithm doesn't make sense over Z/2Z
 
 
+		for (int x = 0; x < arrsize / 2; x++)
+			// fold the real input data into a complex vector:
+			buff[x] = data[bit_reverse_dict[x]] + data[bit_reverse_dict[x + (arrsize / 2)]] * complex_i;	
 
-FFT2D::FFT2D(int s1, int s2) : size1(s1), size2(s2) {
-	arrsize1 = (int)pow(2, size1);
-	arrsize2 = (int)pow(2, size2);
+		co_block_size = arrsize / 4;													// run the calculation for the size - 1 case
+		for (int k = 0; k < size - 1; k++) {
+			for (int cur_block_idx = 0; cur_block_idx < arrsize / 2; cur_block_idx += block_size * 2) {
+				for (int y = 0, root_idx = 0; y < block_size; y++, root_idx += 2 * co_block_size) {
+					int idx = step * (cur_block_idx + y);
+					int idx2 = step * (cur_block_idx + block_size + y);
 
-	f1 = new FFT(size1);
-	f2 = new FFT(size2);
-}
+					temp2 = buff[idx2] * roots[root_idx];								// most expensive step, avoid calculating twice
+					temp = buff[idx] - temp2;
+					buff[idx] = buff[idx] + temp2;
+					buff[idx2] = temp;
+				}
+			}
+			co_block_size /= 2;
+			block_size *= 2;
+		}
 
-FFT2D::~FFT2D() {
-	delete f1, f2;
-}
+		output[0] = (one_half - half_i) * buff[0] + (one_half + half_i) * std::conj(buff[0]);
+		output[arrsize / 2] = (one_half + half_i) * buff[0] + (one_half - half_i) * std::conj(buff[0]);
 
-void FFT2D::transform(double *data, std::complex<double>*output) {  // 2d transform when the input data is real
+		for (int x = 1; x < arrsize / 2; x++) {
+			output[x] = (one_half - half_i * roots[x]) * buff[x]
+				+ (one_half + half_i * roots[x]) * std::conj(buff[arrsize / 2 - x]);
 
-	for (int x = 0; x < arrsize1 * arrsize2; x += arrsize1)
-		f1->transform(data + x, output + x);
+			output[arrsize - x] = std::conj(output[x]);				// fill second half of output by symmetry
+		}
+	}
 
-	for (int y = 0; y < arrsize1; y++)
-		f2->transform(output + y, arrsize1);
-}
 
-void FFT2D::transform(std::complex<double>* data) { // this assumes data points to an array of size1*size2 complex doubles
+	// FFT2D:FF2D(int s1, int s2)
 
-	for (int x = 0; x < arrsize1 * arrsize2; x += arrsize1)
-		f1->transform(data + x);
+	// initializes a 2D fourier transformer for input data of size 2^s1 x 2^s2
 
-	for (int y = 0; y < arrsize1; y++)
-		f2->transform(data + y, arrsize1);
-}
+	FFT2D::FFT2D(int s1, int s2) : size1(s1), size2(s2) {
+		arrsize1 = 1 << size1;
+		arrsize2 = 1 << size2;
 
-void FFT2D::inverse_transform(std::complex<double>* data) { // this assumes data points to an array of size1*size2 complex doubles
-	for (int y = 0; y < arrsize1; y++)
-		f2->inverse_transform(data + y, arrsize1);
+		f1 = new FFT(size1);
+		f2 = new FFT(size2);
+	}
 
-	for (int x = 0; x < arrsize1 * arrsize2; x += arrsize1)
-		f1->inverse_transform(data + x);
+	FFT2D::~FFT2D() {
+		delete f1, f2;
+	}
+
+	// FFT2D::transform(double* data, std::complex<double>* output)
+
+	// performs the 2D discrete fourier transform of _real_ input data
+
+	void FFT2D::transform(double* data, std::complex<double>* output) { 
+
+		for (int x = 0; x < arrsize1 * arrsize2; x += arrsize1)		
+			f1->transform(data + x, output + x);					// can use slightly faster transform in the first step because data is real
+
+		for (int y = 0; y < arrsize1; y++)
+			f2->transform(output + y, arrsize1);
+	}
+
+	void FFT2D::transform(std::complex<double>* data) {				// assumes data points to an array of arrsize1 * arrsize2 complex doubles
+
+		for (int x = 0; x < arrsize1 * arrsize2; x += arrsize1)
+			f1->transform(data + x);
+
+		for (int y = 0; y < arrsize1; y++)
+			f2->transform(data + y, arrsize1);
+	}
+
+	void FFT2D::inverse_transform(std::complex<double>* data) {		// assumes data points to an array of arrsize1*arrsize2 complex doubles
+		for (int y = 0; y < arrsize1; y++)
+			f2->inverse_transform(data + y, arrsize1);
+
+		for (int x = 0; x < arrsize1 * arrsize2; x += arrsize1)
+			f1->inverse_transform(data + x);
+
+	}
 
 }

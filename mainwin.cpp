@@ -1,15 +1,16 @@
 #include <Windows.h>
+#include <windowsx.h>
 #include <CommCtrl.h>
 #include <commctrl.h>
 #include <wincodec.h>
 #include <shobjidl.h>          // for file open/save dialogs
-#include <fstream>              // for saving and loading data
-#include <format>               // formatting strings with std::format
 
-#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "comctl32")
 
-
+#include <fstream>              
+#include <format>             
 #include <string>
+#include <memory>
 #include <map>
 
 #include "cmap.h"
@@ -18,30 +19,23 @@
 
 #define SKY_BLUE                RGB(0x87, 0xCE, 0xEB);
 
-#define CODE_LABEL_MU           6
-#define CODE_LABEL_E            18
-#define CODE_LABEL_R            19
-#define CODE_LABEL_SIGMA        20
-#define CODE_EDIT_MU            5
-#define CODE_EDIT_SIGMA         11
-#define CODE_EDIT_R             12
-#define CODE_EDIT_E             17
-#define CODE_STYLE_MENU         7
-#define CODE_RANDOM             1
-#define CODE_QUIT               2
-#define CODE_UPDOWN_MU          8
-#define CODE_UPDOWN_SIGMA       9
-#define CODE_UPDOWN_R           10
-#define CODE_UPDOWN_E           16
-#define CODE_PLAY               13
-#define CODE_SAVE               14
-#define CODE_LOAD               15
+
+namespace app 
+{
+
+    enum {
+        idc_label_mu, idc_label_e, idc_label_R, idc_label_sigma,
+        idc_edit_mu, idc_edit_sigma, idc_edit_R, idc_edit_e, idc_style_menu, idc_random, idc_quit,
+        idc_updown_mu, idc_updown_sigma, idc_updown_R, idc_updown_e,
+        idc_pause, idc_save, idc_load, idc_export, idc_expand,
+        idc_radio_mode, idc_radio_lenia, idc_radio_lenia3d
+    };
+
 
 template<class Interface>
 inline void SafeRelease(Interface** ppInterfaceToRelease)
 {
-    if (*ppInterfaceToRelease != NULL)
-    {
+    if (*ppInterfaceToRelease != NULL) {
         (*ppInterfaceToRelease)->Release();
         (*ppInterfaceToRelease) = NULL;
     }
@@ -51,63 +45,105 @@ inline void SafeRelease(Interface** ppInterfaceToRelease)
 PCWSTR  MainWindow::ClassName() const { return L"Main Window Class"; }
 
 
-MainWindow::MainWindow()
+MainWindow::MainWindow():
+    m_pFactory(nullptr),
+    m_pRenderTarget(nullptr),
+    m_pBrush(nullptr),
+    m_pBlackBrush(nullptr),
+    cmap(nullptr),
+    paused(false),
+    ll_last_evolved(0)
 {
+    //hMenu = LoadMenu(NULL, MAKEINTRESOURCE(IDR_MENU1));
+
     FILETIME ft_now;
-    int seed;
-
     GetSystemTimeAsFileTime(&ft_now);
-    seed = (int)ft_now.dwLowDateTime % 10000;
-    srand(seed);
+    srand ((int)ft_now.dwLowDateTime % 10000);
 
+    SetStyle(cmap::cmap_keys[DEFAULT_STYLE]);
+    SetMode(LENIA3D_MODE);           
+    leniagrid->randomize();
 
-    m_pFactory = nullptr;
-    m_pRenderTarget = nullptr;
-    m_pBrush = nullptr;
-    m_pBlackBrush = nullptr;
+    LoadIcons();
+    LoadBMP(L"expand.bmp", hExpand, 50, 50);
+}
 
-    /*backgroundColor = RGB(0x87, 0xCE, 0xEB);*/
+//  SetMode() changes the type of grid the window is currently displaying
+//  if renew is true, it resets the grid object as well
 
-    window_mode = LENIA_MODE;
-    paused = false;
+void MainWindow::SetMode(int mode, bool renew)
+{
+    if (mode == window_mode)        // nothing to do
+        return;
 
-    ll_last_evolved = 0;
+    switch (mode) {
+    case LENIA_MODE:
+        window_mode = LENIA_MODE;
+        if (renew) {
+            leniagrid = std::make_shared<LeniaGrid>(10, 10, 104, 0.15, 0.017, 0.1);
+            leniagrid->randomize();
+        }
+        /*leniagrid->randomize(0.2f, 0.2f, 0.8f, 0.7f);*/
 
-    //  window_mode = GOL_MODE;
-    //  grid = new Grid<int>(50, 100);
-    //  grid->randomize(10,6);
-    ///*  grid->setup();*/
-    //  grid->evolve();
-
-    cmap = nullptr;
-    
-    SetStyle(cmap_keys[DEFAULT_STYLE]);
-
-    leniagrid = new LeniaGrid(9,9, 104, 0.15, 0.017, 0.1);
-
-    leniagrid->randomize(0.2f, 0.2f, 0.8f, 0.7f);
-    /*leniagrid->insert_orb(50, 50);*/
-
-    if (window_mode == LENIA_MODE) {
         cell_width = 1;
         cell_height = 1;
 
         grid_width = leniagrid->get_width();
         grid_height = leniagrid->get_height();
-    }
-    
-    if (window_mode == GOL_MODE) {
+        wait_time = 10;
+        break;
+    case LENIA3D_MODE:
+        window_mode = LENIA3D_MODE;
+        if (renew) {
+            leniagrid = std::make_shared<LeniaGrid3D>(7, 7, 7, 26, 0.15, 0.017, 0.1);
+            leniagrid->randomize();
+        }
+        /*leniagrid->randomize(0.2f, 0.2f, 0.2f, 0.7f, 0.5f, 0.5f);*/
+
+        cell_width = 4;
+        cell_height = 4;
+
+        grid_width = leniagrid->get_width();
+        grid_height = leniagrid->get_height();
+        wait_time = 10;
+        break;
+    case GOL_MODE:
         cell_width = 10;
         cell_height = 10;
 
         grid_width = grid->get_width() * cell_width;
         grid_height = grid->get_height() * cell_height;
+        break;
     }
-
-    LoadIcons();
 }
 
-int MainWindow::LoadIcons() {
+int MainWindow::LoadBMP(const std::wstring &filename, HBITMAP &hTarget, int w, int h) 
+{
+    HDC hSrcDC, hTargetDC, hdc;
+    HBITMAP hbmp, hOldSrc, hOldTarget;
+
+    hbmp = (HBITMAP)LoadImage(NULL, filename.c_str(), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
+
+    hdc = GetDC(m_hwnd);
+    hSrcDC = CreateCompatibleDC(hdc);
+    hTargetDC = CreateCompatibleDC(hdc);
+
+    hTarget = CreateCompatibleBitmap(hTargetDC, w, h);
+
+    hOldTarget = (HBITMAP)SelectObject(hTargetDC, hTarget);
+    hOldSrc = (HBITMAP)SelectObject(hSrcDC, hbmp);
+
+    BitBlt(hTargetDC, 0, 0, 60, 60, hSrcDC, 0, 0, SRCCOPY);
+
+    SelectObject(hTargetDC, hOldTarget);
+    SelectObject(hSrcDC, hOldSrc);
+    DeleteDC(hSrcDC);
+    DeleteDC(hTargetDC);
+    return 0;
+}
+
+int MainWindow::LoadIcons() 
+{
     HDC hSrcDC, hTargetDC, hdc;
     HBITMAP hOldSrc, hOldTarget;
 
@@ -185,38 +221,50 @@ int MainWindow::OnCreate()
     // button are placed at (0,0), then repositioned with the same method that Resize() calls
 
     button_rand = CreateWindow(TEXT("button"), TEXT("Randomize"),
-        WS_VISIBLE | WS_CHILD,
+        WS_VISIBLE | WS_CHILD | WS_BORDER,
         0,0, BUTTON_WIDTH, BUTTON_HEIGHT,
-        m_hwnd, (HMENU)CODE_RANDOM, NULL, NULL);
+        m_hwnd, (HMENU)idc_random, NULL, NULL);
 
     button_save = CreateWindow(TEXT("button"), TEXT("Save"),
-        WS_VISIBLE | WS_CHILD,
+        WS_VISIBLE | WS_CHILD | WS_BORDER,
         0,0, BUTTON_WIDTH, BUTTON_HEIGHT,
-        m_hwnd, (HMENU)CODE_SAVE, NULL, NULL);
+        m_hwnd, (HMENU)idc_save, NULL, NULL);
 
     button_load = CreateWindow(TEXT("button"), TEXT("Load"),
-        WS_VISIBLE | WS_CHILD,
+        WS_VISIBLE | WS_CHILD | WS_BORDER,
         0,0, BUTTON_WIDTH, BUTTON_HEIGHT,
-        m_hwnd, (HMENU)CODE_LOAD, NULL, NULL);
+        m_hwnd, (HMENU)idc_load, NULL, NULL);
+
+    button_export = CreateWindow(TEXT("button"), TEXT("Export"),
+        WS_VISIBLE | WS_CHILD | BS_BITMAP | WS_BORDER,
+        0, 0, BUTTON_WIDTH, BUTTON_HEIGHT,
+        m_hwnd, (HMENU)idc_export, NULL, NULL);
 
     button_quit = CreateWindow(TEXT("button"), TEXT("Quit"),
-        WS_VISIBLE | WS_CHILD,
+        WS_VISIBLE | WS_CHILD | WS_BORDER,
         0,0, BUTTON_WIDTH, BUTTON_HEIGHT,
-        m_hwnd, (HMENU)CODE_QUIT, NULL, NULL);
+        m_hwnd, (HMENU)idc_quit, NULL, NULL);
 
-    button_play = CreateWindow(TEXT("button"), TEXT("Play"),
-        WS_VISIBLE | WS_CHILD | BS_BITMAP,
+    button_pause = CreateWindow(TEXT("button"), TEXT("Pause"),
+        WS_VISIBLE | WS_CHILD | BS_BITMAP | WS_BORDER,
         0, 0, 38, 40,
-        m_hwnd, (HMENU)CODE_PLAY, NULL, NULL);
+        m_hwnd, (HMENU)idc_pause, NULL, NULL);
 
-    SendMessage(button_play, BM_SETIMAGE, (WPARAM)IMAGE_BITMAP, (LPARAM)hPlayIcon);
+    UpdatePauseButton();        // set button to correct state
+
+    /*button_expand = CreateWindow(TEXT("button"), TEXT("Expand"),
+        WS_VISIBLE | WS_CHILD | BS_BITMAP | WS_BORDER,
+        0, 0, 50, 50,
+        m_hwnd, (HMENU)CODE_EXPAND, NULL, NULL);
+
+    SendMessage(button_expand, BM_SETIMAGE, (WPARAM)IMAGE_BITMAP, (LPARAM)hExpand);*/
 
     style_menu = CreateWindow(TEXT("combobox"),
-        NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWN | WS_VSCROLL,
+        NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL| WS_BORDER,
         0, 0, STYLE_MENU_WIDTH, STYLE_MENU_HEIGHT,
-        m_hwnd, (HMENU)CODE_STYLE_MENU, NULL, NULL);
+        m_hwnd, (HMENU)idc_style_menu, NULL, NULL);
 
-    for (auto it = cmap_list.begin(); it != cmap_list.end(); it++)
+    for (auto it = cmap::cmap_list.begin(); it != cmap::cmap_list.end(); it++)
         SendMessage(style_menu, CB_ADDSTRING, 0, (LPARAM)(const wchar_t*)(it->first).c_str());
 
     SendMessage(style_menu, CB_SETCURSEL, (WPARAM)DEFAULT_STYLE, 0);
@@ -224,81 +272,90 @@ int MainWindow::OnCreate()
     label_mu = CreateWindow(TEXT("static"), TEXT("10\u00b2\u03BC:"),
         WS_VISIBLE | WS_CHILD | SS_CENTER | SS_CENTERIMAGE,
         0, 0, LABEL_WIDTH, LABEL_HEIGHT,
-        m_hwnd, (HMENU)CODE_LABEL_MU, NULL, NULL);
+        m_hwnd, (HMENU)idc_label_mu, NULL, NULL);
 
     edit_mu = CreateWindow(TEXT("edit"), NULL,
         WS_BORDER | WS_VISIBLE | WS_CHILD | ES_LEFT | SS_CENTER,
         0, 0, EDIT_WIDTH, LABEL_HEIGHT,
-        m_hwnd, (HMENU)CODE_EDIT_MU, NULL, NULL);
+        m_hwnd, (HMENU)idc_edit_mu, NULL, NULL);
 
-    SetWindowSubclass(edit_mu, EditControlProcWrapper, CODE_EDIT_MU, (DWORD_PTR) this);
+    SetWindowSubclass(edit_mu, EditControlProcWrapper, idc_edit_mu, (DWORD_PTR) this);
 
     hUpdownMu = CreateWindow(UPDOWN_CLASS, NULL, 
         WS_CHILDWINDOW | WS_VISIBLE | UDS_AUTOBUDDY | UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_HOTTRACK,
         0, 0, 0, 0,
-        m_hwnd, (HMENU)CODE_UPDOWN_MU, NULL, NULL);
+        m_hwnd, (HMENU)idc_updown_mu, NULL, NULL);
 
     SendMessage(hUpdownMu, UDM_SETRANGE, 0, MAKELPARAM(100, 1));
 
     label_sigma = CreateWindow(TEXT("static"), TEXT("10\u00b3\u03C3:"),
         WS_VISIBLE | WS_CHILD | SS_CENTER | SS_CENTERIMAGE,
         0, 0, LABEL_WIDTH, LABEL_HEIGHT,
-        m_hwnd, (HMENU)CODE_LABEL_SIGMA, NULL, NULL);
+        m_hwnd, (HMENU)idc_label_sigma, NULL, NULL);
 
     edit_sigma = CreateWindow(TEXT("edit"), NULL,
         WS_BORDER | WS_VISIBLE | WS_CHILD | ES_LEFT | SS_CENTER,
         0, 0, EDIT_WIDTH, LABEL_HEIGHT,
-        m_hwnd, (HMENU)CODE_EDIT_SIGMA, NULL, NULL);
+        m_hwnd, (HMENU)idc_edit_sigma, NULL, NULL);
 
-    SetWindowSubclass(edit_sigma, EditControlProcWrapper, CODE_EDIT_SIGMA, (DWORD_PTR) this);
+    SetWindowSubclass(edit_sigma, EditControlProcWrapper, idc_edit_sigma, (DWORD_PTR) this);
 
     hUpdownSigma = CreateWindow(UPDOWN_CLASS, NULL, 
         WS_CHILDWINDOW | WS_VISIBLE | UDS_AUTOBUDDY | UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_HOTTRACK,
         0,0, 30, 30,
-        m_hwnd, (HMENU)CODE_UPDOWN_SIGMA, NULL, NULL);
+        m_hwnd, (HMENU)idc_updown_sigma, NULL, NULL);
 
     SendMessage(hUpdownSigma, UDM_SETRANGE, 0, MAKELPARAM(100, 1));
 
     label_R = CreateWindow(TEXT("static"), TEXT("R:"),
         WS_VISIBLE | WS_CHILD | SS_CENTER | SS_CENTERIMAGE,
         0,0, LABEL_WIDTH, LABEL_HEIGHT,
-        m_hwnd, (HMENU)CODE_LABEL_R, NULL, NULL);
+        m_hwnd, (HMENU)idc_label_R, NULL, NULL);
 
     edit_R = CreateWindow(TEXT("edit"), NULL,
         WS_BORDER | WS_VISIBLE | WS_CHILD | ES_LEFT | SS_CENTER,
         0, 0, EDIT_WIDTH, LABEL_HEIGHT,
-        m_hwnd, (HMENU)CODE_EDIT_R, NULL, NULL);
+        m_hwnd, (HMENU)idc_edit_R, NULL, NULL);
 
-    SetWindowSubclass(edit_R, EditControlProcWrapper, CODE_EDIT_R, (DWORD_PTR) this);
+    SetWindowSubclass(edit_R, EditControlProcWrapper, idc_edit_R, (DWORD_PTR) this);
 
     hUpdownR = CreateWindow(UPDOWN_CLASS, NULL, 
         WS_CHILDWINDOW | WS_VISIBLE | UDS_AUTOBUDDY | UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_HOTTRACK,
         0, 0, 30, 30,
-        m_hwnd, (HMENU)CODE_UPDOWN_R, NULL, NULL);
+        m_hwnd, (HMENU)idc_updown_R, NULL, NULL);
 
-
-    /*SendMessage(hUpdownR, UDM_SETBUDDY, 0, MAKELPARAM(edit_R, 0));*/
     SendMessage(hUpdownR, UDM_SETRANGE, 0, MAKELPARAM(200, 1));
 
     label_e = CreateWindow(TEXT("static"), TEXT("10\u00b2\u03b5:"),
         WS_VISIBLE | WS_CHILD | SS_CENTER | SS_CENTERIMAGE,
         0, 0, LABEL_WIDTH, LABEL_HEIGHT,
-        m_hwnd, (HMENU)CODE_LABEL_E, NULL, NULL);
+        m_hwnd, (HMENU)idc_label_e, NULL, NULL);
 
     edit_e = CreateWindow(TEXT("edit"), NULL,
         WS_BORDER | WS_VISIBLE | WS_CHILD | ES_LEFT | SS_CENTER,
         0, 0, EDIT_WIDTH, LABEL_HEIGHT,
-        m_hwnd, (HMENU)CODE_EDIT_E, NULL, NULL);
+        m_hwnd, (HMENU)idc_edit_e, NULL, NULL);
 
-    SetWindowSubclass(edit_e, EditControlProcWrapper, CODE_EDIT_E, (DWORD_PTR) this);
+    SetWindowSubclass(edit_e, EditControlProcWrapper, idc_edit_e, (DWORD_PTR) this);
 
     hUpdowne = CreateWindow(UPDOWN_CLASS, NULL, 
         WS_CHILDWINDOW | WS_VISIBLE | UDS_AUTOBUDDY | UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_HOTTRACK,
         0, 0, 30, 30,
-        m_hwnd, (HMENU)CODE_UPDOWN_E, NULL, NULL);
+        m_hwnd, (HMENU)idc_updown_e, NULL, NULL);
 
     SendMessage(hUpdowne, UDM_SETRANGE, 0, MAKELPARAM(100, 1));
 
+    // Radio button for mode:
+
+    radio_lenia = CreateWindow(TEXT("button"), TEXT("&Lenia"),
+        WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_GROUP,
+        0,0, 100, 30, m_hwnd, (HMENU)idc_radio_lenia, NULL, NULL);
+
+    radio_lenia3d = CreateWindow(TEXT("button"), TEXT("&Lenia 3D"),
+        WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON,
+        0, 0, 100, 30, m_hwnd, (HMENU)idc_radio_lenia3d, NULL, NULL);
+
+    UpdateRadio();
     PositionButtons(); // sets the actual positions 
     UpdateDials();
         
@@ -334,14 +391,18 @@ void MainWindow::PositionButtons()
         button_list_x, button_list_y + 2 * (BUTTON_VERTICAL_SPACE + BUTTON_HEIGHT),
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
-    hdwp = DeferWindowPos(hdwp, button_quit, HWND_TOPMOST, 
+    hdwp = DeferWindowPos(hdwp, button_export, HWND_TOPMOST,
         button_list_x, button_list_y + 3 * (BUTTON_VERTICAL_SPACE + BUTTON_HEIGHT),
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
-    // horizontal dials:
+    hdwp = DeferWindowPos(hdwp, button_quit, HWND_TOPMOST, 
+        button_list_x, button_list_y + 4 * (BUTTON_VERTICAL_SPACE + BUTTON_HEIGHT),
+        0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+    // dials:
 
     hdwp = DeferWindowPos(hdwp, label_mu, HWND_TOPMOST, 
-        dial_list_x, dial_list_y,
+        dial_list_x , dial_list_y,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, edit_mu, HWND_TOPMOST, 
@@ -349,67 +410,80 @@ void MainWindow::PositionButtons()
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, hUpdownMu, HWND_TOPMOST, 
-        dial_list_x + LABEL_WIDTH + EDIT_WIDTH -  UP_DOWN_OFFSET, dial_list_y,
+        dial_list_x + LABEL_WIDTH + EDIT_WIDTH - UP_DOWN_OFFSET, dial_list_y,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, label_sigma, HWND_TOPMOST, 
-        dial_list_x + (DIAL_WIDTH + DIAL_HORIZONTAL_SPACE), dial_list_y,
+        dial_list_x + DIAL_HORIZONTAL_SPACE + LABEL_WIDTH + EDIT_WIDTH, dial_list_y,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, edit_sigma, HWND_TOPMOST, 
-        dial_list_x + (DIAL_WIDTH + DIAL_HORIZONTAL_SPACE) + LABEL_WIDTH, dial_list_y ,
+        dial_list_x + DIAL_HORIZONTAL_SPACE +2*LABEL_WIDTH + EDIT_WIDTH, dial_list_y,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, hUpdownSigma, HWND_TOPMOST, 
-        dial_list_x + (DIAL_WIDTH + DIAL_HORIZONTAL_SPACE) + LABEL_WIDTH + EDIT_WIDTH - UP_DOWN_OFFSET, dial_list_y,
+        dial_list_x + DIAL_HORIZONTAL_SPACE + 2*(LABEL_WIDTH + EDIT_WIDTH) - UP_DOWN_OFFSET, dial_list_y,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, label_R, HWND_TOPMOST, 
-        dial_list_x + 2 * (DIAL_WIDTH + DIAL_HORIZONTAL_SPACE), dial_list_y,
+        dial_list_x , dial_list_y + 40,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, edit_R, HWND_TOPMOST,
-        dial_list_x + 2 * (DIAL_WIDTH + DIAL_HORIZONTAL_SPACE) + LABEL_WIDTH, dial_list_y,
+        dial_list_x + LABEL_WIDTH, dial_list_y + 40,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, hUpdownR, HWND_TOPMOST, 
-        dial_list_x + 2 * (DIAL_WIDTH + DIAL_HORIZONTAL_SPACE) + LABEL_WIDTH + EDIT_WIDTH - UP_DOWN_OFFSET, dial_list_y,
+        dial_list_x + LABEL_WIDTH + EDIT_WIDTH - UP_DOWN_OFFSET, dial_list_y + 40,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, label_e, HWND_TOPMOST,
-        dial_list_x + 3 * (DIAL_WIDTH + DIAL_HORIZONTAL_SPACE), dial_list_y,
+        dial_list_x + DIAL_HORIZONTAL_SPACE + LABEL_WIDTH + EDIT_WIDTH, dial_list_y + 40,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, edit_e, HWND_TOPMOST,
-        dial_list_x + 3 * (DIAL_WIDTH + DIAL_HORIZONTAL_SPACE) + LABEL_WIDTH, dial_list_y,
+        dial_list_x + DIAL_HORIZONTAL_SPACE + 2*LABEL_WIDTH + EDIT_WIDTH, dial_list_y +  40,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     hdwp = DeferWindowPos(hdwp, hUpdowne, HWND_TOPMOST,
-        dial_list_x + 3 * (DIAL_WIDTH + DIAL_HORIZONTAL_SPACE) + LABEL_WIDTH + EDIT_WIDTH - UP_DOWN_OFFSET, dial_list_y,
+        dial_list_x + DIAL_HORIZONTAL_SPACE + 2*(LABEL_WIDTH + EDIT_WIDTH) - UP_DOWN_OFFSET, dial_list_y + 40,
+        0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+    // mode radio:
+
+    hdwp = DeferWindowPos(hdwp, radio_lenia, HWND_TOPMOST,
+        dial_list_x, dial_list_y + 80,
+        0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+    hdwp = DeferWindowPos(hdwp, radio_lenia3d, HWND_TOPMOST,
+        dial_list_x, dial_list_y + 80 + radio_vertical_space,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     // bottom gadgets
 
-    hdwp = DeferWindowPos(hdwp, button_play, HWND_TOPMOST,
-        grid_origin_x + (grid_width / 2), grid_origin_y + grid_height * cell_height + 10, 
+    hdwp = DeferWindowPos(hdwp, button_pause, HWND_TOPMOST,
+        grid_origin_x + grid_width*cell_width + 50, grid_origin_y + grid_height * cell_height/2, 
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
+    /*hdwp = DeferWindowPos(hdwp, button_expand, HWND_TOPMOST,
+        grid_origin_x*cell_width + grid_width + 20, grid_origin_y + 20,
+        0, 0, SWP_NOSIZE | SWP_NOZORDER);*/
+
     hdwp = DeferWindowPos(hdwp, style_menu, HWND_TOPMOST,
-        grid_origin_x, grid_origin_y + grid_height * cell_height + 10,
+        grid_origin_x + grid_width*cell_width + 50, grid_origin_y + grid_height * cell_height - 30,
         0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
     EndDeferWindowPos(hdwp);
-
+        
 }
 
 void MainWindow::SetStyle(const std::wstring cmap_label) 
 {
-    std::map < std::string, std::vector<std::vector<double>>> cmap_data;
+    std::map < std::string, std::vector<std::vector<double>>> cmap_data = cmap::cmap_list.find(cmap_label)->second;
 
-    cmap_data = cmap_list.find(cmap_label)->second;
     if (cmap != nullptr)
         delete cmap;
-    cmap = new CMap(cmap_data["red"], cmap_data["green"], cmap_data["blue"]);
+    cmap = new cmap::CMap(cmap_data["red"], cmap_data["green"], cmap_data["blue"]);
 }
 
 LRESULT MainWindow::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -435,54 +509,72 @@ LRESULT MainWindow::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         switch (LOWORD(wParam)) {
 
-        case CODE_PLAY:
-            leniagrid->toggle_pause();
-
-            if (leniagrid->is_paused()) 
-                SendMessage(button_play, BM_SETIMAGE, (WPARAM)IMAGE_BITMAP, (LPARAM)hPauseIcon);
-            else 
-                SendMessage(button_play, BM_SETIMAGE, (WPARAM)IMAGE_BITMAP, (LPARAM)hPlayIcon);
+        case idc_pause:
+            TogglePause();
+            UpdatePauseButton();
             break;
 
-        case CODE_RANDOM:
+        case idc_random:
             leniagrid->randomize();
             /*InvalidateRect(m_hwnd, NULL, FALSE);*/
             OnPaint();                                  // manually repaint, because we want it to happen even if paused
             break;
 
-        case CODE_SAVE:
+        case idc_save:
             SaveDialog();
             break;
 
-        case CODE_LOAD:
+        case idc_export:
+            ExportDialog();
+            break;
+
+        case idc_load:
             OpenDialog();
             break;
 
-        case CODE_QUIT:
+        case idc_quit:
             DiscardGraphicsResources();
             SafeRelease(&m_pFactory);
             PostQuitMessage(0);
+            break;
 
-        case CODE_STYLE_MENU:
+        case idc_style_menu:
             if (HIWORD(wParam) == CBN_SELCHANGE)
             {
                 wchar_t cmap_text[20];
                 LRESULT sel = SendMessage(style_menu, CB_GETCURSEL, 0, 0);
                 SendMessage(style_menu, CB_GETLBTEXT, sel, (LPARAM)&cmap_text);
-                cmap_text[19] = 0;              // compiler complains if we don't make sure it's null-terminated
+                cmap_text[19] = 0;              // compiler complains if we don't ensure it's null-terminated
                 SetStyle((std::wstring) cmap_text);
+                InvalidateRect(m_hwnd, NULL, FALSE);
             }
             break;
             
-        case CODE_UPDOWN_R:
+        case idc_updown_R:
             if (HIWORD(wParam) == EN_CHANGE)
             {
                 LRESULT lr = SendMessage(hUpdownR, UDM_GETPOS, 0, 0);
                 leniagrid->fill_kernel((int)LOWORD(lr));
             }
             break;
+
+        case idc_radio_lenia:
+            if (window_mode != LENIA_MODE) {
+                SetMode(LENIA_MODE, true);
+                Resize();
+            }
+            break;
+        
+        case idc_radio_lenia3d:
+            if (window_mode != LENIA3D_MODE) {
+                SetMode(LENIA3D_MODE, true);
+                Resize();
+            }
+            break;
+
         }
         break;
+
 
     case WM_SIZE:
         Resize();
@@ -491,40 +583,59 @@ LRESULT MainWindow::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     //case WM_SETFOCUS:
     //    ValidateControlData((HWND)wParam);
     //    return 0;
+    case WM_LBUTTONDOWN:            // this is needed to make edit controls lose focus when clicked outside
+        SetFocus(m_hwnd);
+        break;
 
+    case WM_MOUSEWHEEL:
+        if (window_mode == LENIA3D_MODE)
+            ProcessMouseWheel(GET_WHEEL_DELTA_WPARAM(wParam));
+        OnPaint();
+        break;
 
     case WM_NOTIFY:
+
         LRESULT lr;
-        switch (((LPNMHDR)lParam)->idFrom) {
-        case CODE_UPDOWN_MU:
-            lr = SendMessage(hUpdownMu, UDM_GETPOS, 0, 0);
-            leniagrid->set_mu((double)LOWORD(lr) / 100);
-            break;
-        
-        case CODE_UPDOWN_SIGMA:
-            lr = SendMessage(hUpdownSigma, UDM_GETPOS, 0, 0);
-            leniagrid->set_sigma((double)LOWORD(lr) / 1000);
-            break;
+        LPNMHDR pnmh;
+        LPNMUPDOWN nmupdown;
+        nmupdown = (LPNMUPDOWN)lParam;
+        pnmh = & (nmupdown->hdr);
 
-        case CODE_UPDOWN_R:
-            lr = SendMessage(hUpdownR, UDM_GETPOS, 0, 0);
-            leniagrid->fill_kernel((int)LOWORD(lr));
-            break;
+        if (pnmh->code == UDN_DELTAPOS) { // possible compiler warning here because UDN_DELTAPOS has a fancy definition as negative number  
+            int cur = nmupdown->iPos + nmupdown->iDelta;
 
-        case CODE_UPDOWN_E:
-            lr = SendMessage(hUpdowne, UDM_GETPOS, 0, 0);
-            leniagrid->set_epsilon(((double)LOWORD(lr)/100));
-            break;
+            switch (pnmh->idFrom) {
+            case idc_updown_mu:
+                if ((cur >= min_edit_mu) && (cur <= max_edit_mu)) {
+                    lr = SendMessage(hUpdownMu, UDM_GETPOS, 0, 0);
+                    leniagrid->set_mu((double)LOWORD(lr) / 100);
+                }
+                break;
+
+            case idc_updown_sigma:
+                if ((cur >= min_edit_sigma) && (cur <= max_edit_sigma)) {
+                    lr = SendMessage(hUpdownSigma, UDM_GETPOS, 0, 0);
+                    leniagrid->set_sigma((double)LOWORD(lr) / 1000);
+                }
+                break;
+
+            case idc_updown_R:
+                if ((cur >= min_edit_R) && (cur <= max_edit_R)) {
+                    lr = SendMessage(hUpdownR, UDM_GETPOS, 0, 0);
+                    leniagrid->fill_kernel(cur);
+                }
+                break;
+
+            case idc_updown_e:
+                if ((cur >= min_edit_e) && (cur <= max_edit_e)) {
+                    lr = SendMessage(hUpdowne, UDM_GETPOS, 0, 0);
+                    leniagrid->set_epsilon(((double)LOWORD(lr) / 100));
+                }
+                break;
+            }
         }
-        /*break;*/
-
-    /* this code is not needed because system handles background repaint automatically based on flag set at create time*/
-    //case WM_ERASEBKGND:                               
-    //    m_pRenderTarget->BeginDraw();
-    //    m_pRenderTarget->Clear(D2D1::ColorF(D2D1::ColorF::SkyBlue));
-    //    m_pRenderTarget->EndDraw();
-    //    return -1;
-
+        // still need the default proc to take care of max/min limits on edit controls:
+        return DefWindowProc(m_hwnd, uMsg, wParam, lParam); 
     default:
         return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
     }
@@ -562,9 +673,14 @@ LRESULT CALLBACK MainWindow::EditControlProc(HWND hwnd, UINT uMsg, WPARAM wParam
             return FALSE;
         }
         break;
+
+    case WM_KILLFOCUS:
+        this->ValidateControlData(hwnd);
+        break;
     }
     return DefSubclassProc(hwnd, uMsg, wParam, lParam);
 }
+
 
 void MainWindow::ValidateControlData(HWND hwnd)
 {
@@ -572,23 +688,23 @@ void MainWindow::ValidateControlData(HWND hwnd)
     bool failed_validation = false;
 
     if (hwnd == edit_e) {
-        max = MAX_EDIT_E;
-        min = MIN_EDIT_E;
+        max = max_edit_e;
+        min = min_edit_e;
         cur = (int)leniagrid->get_epsilon() * 1000;
     }
     else if (hwnd == edit_mu) {
-        max = MAX_EDIT_MU;
-        min = MIN_EDIT_MU;
+        max = max_edit_mu;
+        min = min_edit_mu;
         cur = (int)leniagrid->get_mu() * 100;
     }
     else if (hwnd == edit_sigma) {
-        max = MAX_EDIT_SIGMA;
-        min = MIN_EDIT_SIGMA;
+        max = max_edit_sigma;
+        min = min_edit_sigma;
         cur = (int)leniagrid->get_sigma() * 100;
     }
     else if (hwnd == edit_R) {
-        max = MAX_EDIT_R;
-        min = MIN_EDIT_R;
+        max = max_edit_R;
+        min = min_edit_R;
         cur = leniagrid->get_R();
     }
     else
@@ -649,14 +765,17 @@ void MainWindow :: OnPaint()
         PaintGoL();
         break;
     case LENIA_MODE:
-        PaintLenia2();
+        PaintLenia();
+        break;
+    case LENIA3D_MODE:
+        PaintLenia3D();
         break;
     }
 }
 
-void MainWindow::PaintLenia2()
+void MainWindow::PaintLenia()
 {
-     HRESULT hr = CreateGraphicsResources();
+    HRESULT hr = CreateGraphicsResources();
     if (SUCCEEDED(hr))
     {
         RECT rc;
@@ -672,7 +791,7 @@ void MainWindow::PaintLenia2()
             HDC memhdc;
             HBITMAP hbmp, holdbmp;
             BITMAPINFO bmi;
-            char* m_pBits;
+            uint32_t* m_pBits;
 
             memset(&bmi, 0, sizeof(BITMAPINFO));
             bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -686,81 +805,107 @@ void MainWindow::PaintLenia2()
             memhdc = CreateCompatibleDC(hdc);
             /*hbmp = CreateCompatibleBitmap(hdc, grid_width * cell_width, grid_height * cell_height);*/
 
-            holdbmp = (HBITMAP)SelectObject(memhdc, hbmp);
-            GdiFlush();
-         
-            /* here do the painting */
+            if (hbmp && memhdc) {     // if failed to create structures, do nothing this cycle
 
-            for (int y = 0; y < grid_height; y++) {
-                for (int t = 0; t < cell_height; t++) {
-                    for (int x = 0; x < grid_width; x++)                            
-                    {   
-                        double pixel_value = leniagrid->get(x, y);                  // get each pixel's color and draw
-                        for (int u = 0; u < cell_width; u++) {
-                            *m_pBits = (char)(cmap->blue(pixel_value) * 255);
-                            m_pBits++;
-                            *m_pBits = (char)(cmap->green(pixel_value) * 255);
-                            m_pBits++;
-                            *m_pBits = (char)(cmap->red(pixel_value) * 255);
-                            m_pBits += 2;
+                holdbmp = (HBITMAP)SelectObject(memhdc, hbmp);
+                GdiFlush();
+
+                // The following code seems to do redunant work: it repeats each row's calculations several (cell_height) times.
+                // But this is not that big a deal. It only matters when cell_height > 1, and in that case the grid must be smaller, meaning
+                // the evolve() function elsewhere runs much faster.
+
+                for (int y = 0; y < grid_height; y++) {
+                    for (int t = 0; t < cell_height; t++) {
+                        for (int x = 0; x < grid_width; x++) {
+                            for (int u = 0; u < cell_width; u++) {
+                                *m_pBits = (*cmap)(leniagrid->get(x, y));
+                                m_pBits++;
+                            }
                         }
                     }
                 }
+
+                BitBlt(hdc, grid_origin_x, grid_origin_y, grid_width * cell_width, grid_height * cell_height, memhdc, 0, 0, SRCCOPY);
+
+                SelectObject(memhdc, holdbmp);
             }
 
-            BitBlt(hdc, grid_origin_x, grid_origin_y, grid_width * cell_width, grid_height * cell_height, memhdc, 0, 0, SRCCOPY);
-
-            SelectObject(memhdc, holdbmp);
-            DeleteDC(memhdc);
-            DeleteObject(hbmp);
+            if (memhdc)
+                DeleteDC(memhdc);
+            if (hbmp)
+                DeleteObject(hbmp);
         }
         EndPaint(m_hwnd, &ps);
     }
+
 }
 
-void MainWindow::PaintLenia()
+void MainWindow::PaintLenia3D()
 {
-    double pixel_value;
-
-    HRESULT hr = CreateGraphicsResources();
+     HRESULT hr = CreateGraphicsResources();
     if (SUCCEEDED(hr))
     {
+        RECT rc;
+        HDC hdc;
         PAINTSTRUCT ps;
+
+        GetClientRect(m_hwnd, &rc);
+        hdc = GetDC(m_hwnd);         //get device context 
+
         BeginPaint(m_hwnd, &ps);
 
-        m_pRenderTarget->BeginDraw();
+        if (hdc != NULL) {
+            HDC memhdc;
+            HBITMAP hbmp, oldhbmp;
+            BITMAPINFO bmi;
+            uint32_t* m_pBits;
 
-        /*       for (int x = grid_origin_x; x <= grid_width*cell_width + grid_origin_x; x += cell_width) {
-                   m_pRenderTarget->DrawLine(
-                       D2D1::Point2F(static_cast<FLOAT>(x), grid_origin_y),
-                       D2D1::Point2F(static_cast<FLOAT>(x), grid_origin_y + grid_height * cell_height),
-                       m_pBlackBrush, 0.5f);
-               }
+            memset(&bmi, 0, sizeof(BITMAPINFO));
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = grid_width * cell_width;
+            bmi.bmiHeader.biHeight = -grid_height * cell_height;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
 
-               for (int y = grid_origin_y; y <= grid_height*cell_width + grid_origin_y; y += cell_height) {
-                   m_pRenderTarget->DrawLine(
-                       D2D1::Point2F(grid_origin_x, static_cast<FLOAT>(y)),
-                       D2D1::Point2F(grid_origin_x + grid_width * cell_width, static_cast<FLOAT>(y)),
-                       m_pBlackBrush, 0.5f);
-               }*/
+            hbmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, (void**)&m_pBits, NULL, NULL);
+            memhdc = CreateCompatibleDC(hdc);
+            /*hbmp = CreateCompatibleBitmap(hdc, grid_width * cell_width, grid_height * cell_height);*/
 
-        for (int x = 0; x < grid_width; x++)                            // get each pixel's color and draw
-            for (int y = 0; y < grid_height; y++) {
-                pixel_value = leniagrid->get(x, y);
-                m_pBlackBrush->SetColor((*cmap)(pixel_value));          // set color according to specified cmap
+            if (hbmp && memhdc) {     // if failed to create structures, do nothing this cycle
 
-                D2D1_RECT_F rect = D2D1::RectF(static_cast<FLOAT>(x * cell_width) + grid_origin_x,
-                    static_cast<FLOAT> (y * cell_height) + grid_origin_y,
-                    static_cast<FLOAT>((x + 1) * cell_width) + grid_origin_x,
-                    static_cast<FLOAT> ((y + 1) * cell_height) + grid_origin_y);
-                m_pRenderTarget->FillRectangle(&rect, m_pBlackBrush);
+                oldhbmp = (HBITMAP)SelectObject(memhdc, hbmp);
+                GdiFlush();
+
+                // The following code seems to do redunant work: it repeats each row's calculations several (cell_height) times.
+                // But this is not that big a deal. It only matters when cell_height > 1, and in that case the grid must be smaller, meaning
+                // the evolve() function elsewhere runs much faster.
+
+                for (int y = 0; y < grid_height; y++) {
+                    for (int t = 0; t < cell_height; t++) {
+                        for (int x = 0; x < grid_width; x++) {
+                            for (int u = 0; u < cell_width; u++) {
+                                *m_pBits = (*cmap)(leniagrid->get(x, y, z_slice));
+                                m_pBits++;
+                            }
+                        }
+                    }
+                }
+
+               
+                BitBlt(hdc, grid_origin_x, grid_origin_y, grid_width * cell_width, grid_height * cell_height, memhdc, 0, 0, SRCCOPY);
+
+                SelectObject(memhdc, oldhbmp);
             }
+            if (memhdc)
+                DeleteDC(memhdc);
+            if (hbmp)
+                DeleteObject(hbmp);
 
-        hr = m_pRenderTarget->EndDraw();
-        if (FAILED(hr) || hr == D2DERR_RECREATE_TARGET)
-        {
-            DiscardGraphicsResources();
+            std::wstring msg_str = std::format(L"z_slice: {:3}", z_slice);
+            TextOut(hdc, grid_origin_x, grid_origin_y - 20, msg_str.c_str(), msg_str.length());
         }
+            
         EndPaint(m_hwnd, &ps);
     }
 }
@@ -833,6 +978,9 @@ void MainWindow::Resize()
 
 void MainWindow::CalculateLayout()
 {
+    grid_width = leniagrid->get_width();
+    grid_height = leniagrid->get_height();
+
     if (m_pRenderTarget != NULL) {
         D2D1_SIZE_F rtSize = m_pRenderTarget->GetSize();
 
@@ -842,12 +990,13 @@ void MainWindow::CalculateLayout()
         button_list_x = grid_origin_x - BUTTON_X_OFFSET;
         button_list_y = grid_origin_y;
 
-        dial_list_x = grid_origin_x;
-        dial_list_y = grid_origin_y - DIAL_Y_OFFSET;
+        dial_list_x = grid_origin_x + grid_width * cell_width + DIAL_Y_OFFSET;
+        dial_list_y = grid_origin_y;
     }
 }
 
-void MainWindow::update() {
+void MainWindow::update() 
+{
     FILETIME ft_now;
     LONGLONG ll_now;
 
@@ -855,10 +1004,12 @@ void MainWindow::update() {
 
     ll_now = ((LONGLONG)ft_now.dwLowDateTime + ((LONGLONG)(ft_now.dwHighDateTime) << 32LL)) / 10000;
 
-    if (leniagrid->is_paused() && (ll_now - ll_last_evolved > 20)) {
+    if (!paused && (ll_now - ll_last_evolved > wait_time)) {
         if (window_mode == GOL_MODE)
             grid->evolve();
         else if (window_mode == LENIA_MODE)
+            leniagrid->evolve();
+        else if (window_mode == LENIA3D_MODE)
             leniagrid->evolve();
         ll_last_evolved = ll_now;
         
@@ -879,19 +1030,20 @@ void MainWindow::update() {
 //    }
 //}
 
-MainWindow::~MainWindow() {
-    delete grid;
-    delete leniagrid;
+MainWindow::~MainWindow() 
+{
+    DiscardGraphicsResources();
     delete cmap;
 }
 
-HRESULT MainWindow::SaveDialog() {
+HRESULT MainWindow::ExportDialog() 
+{
     IFileDialog* pfd = nullptr;
     /*IFileDialogEvents* pfde = nullptr;*/
     IShellItem* shell_item = nullptr;
     PWSTR filepath;
 
-    COMDLG_FILTERSPEC file_filter[] = { {L"Lenia files", L"*.len"} };
+    COMDLG_FILTERSPEC file_filter[] = { {L"bmp image files", L"*.bmp"} };
 
     HRESULT hr;
 
@@ -919,12 +1071,12 @@ HRESULT MainWindow::SaveDialog() {
                     file.open(filepath, std::ios::out | std::ios::trunc | std::ios::binary);
 
                     if (!file) {
-                        TaskDialog(NULL, NULL, L"Save Failed", 
+                        TaskDialog(NULL, NULL, L"Export Failed",
                             std::format(L"Could not open {} for writing.", filepath).c_str(), NULL, TDCBF_OK_BUTTON | TDCBF_OK_BUTTON, TD_INFORMATION_ICON, NULL);
                     }
                     else {
-                        if ( leniagrid->save(file) != 0) 
-                            TaskDialog(NULL, NULL, L"Save Failed", std::format(L"Failed to save data to {}.", filepath).c_str(), NULL, TDCBF_OK_BUTTON | TDCBF_OK_BUTTON, TD_INFORMATION_ICON, NULL);
+                        if (ExportBMP(file)!=0)
+                            TaskDialog(NULL, NULL, L"Export Failed", std::format(L"Failed to export image to {}.", filepath).c_str(), NULL, TDCBF_OK_BUTTON | TDCBF_OK_BUTTON, TD_INFORMATION_ICON, NULL);
                         file.close();
                     }
                     CoTaskMemFree(filepath);
@@ -939,7 +1091,75 @@ HRESULT MainWindow::SaveDialog() {
     return hr;
 }
 
-HRESULT MainWindow::OpenDialog() {
+HRESULT MainWindow::SaveDialog() 
+{
+    IFileDialog* pfd = nullptr;
+    /*IFileDialogEvents* pfde = nullptr;*/
+    IShellItem* shell_item = nullptr;
+    PWSTR filepath;
+
+    COMDLG_FILTERSPEC file_filter[] = { {L"Lenia files", L"*.len"} };
+
+    bool old_paused = paused;
+
+    HRESULT hr;
+  
+    if (window_mode == LENIA3D_MODE) {
+        TaskDialog(NULL, NULL, L"Save Failed",
+            std::format(L"Saving Lenia3D not yet implemented.", filepath).c_str(), NULL, TDCBF_OK_BUTTON | TDCBF_OK_BUTTON, TD_INFORMATION_ICON, NULL);
+        return E_NOTIMPL;
+    }
+
+    hr = CoCreateInstance(CLSID_FileSaveDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
+
+    if (FAILED(hr))
+        return hr;
+
+    paused = true;
+
+    if (SUCCEEDED(hr)) {
+        pfd->SetFileTypes(ARRAYSIZE(file_filter), file_filter);
+        pfd->SetDefaultExtension(L"len");
+
+
+        hr = pfd->Show(NULL);
+
+        if (SUCCEEDED(hr)) {
+            hr = pfd->GetResult(&shell_item);
+
+            if (SUCCEEDED(hr)) {
+                shell_item->GetDisplayName(SIGDN_FILESYSPATH, &filepath);
+
+                if (SUCCEEDED(hr)) {
+
+                    std::fstream file;
+                    file.open(filepath, std::ios::out | std::ios::trunc | std::ios::binary);
+
+                    if (!file) {
+                        TaskDialog(NULL, NULL, L"Save Failed", 
+                            std::format(L"Could not open {} for writing.", filepath).c_str(), NULL, TDCBF_OK_BUTTON | TDCBF_OK_BUTTON, TD_INFORMATION_ICON, NULL);
+                    }
+                    else {
+                        if ( LeniaIOHandler::save(*leniagrid,file) != 0) 
+                            TaskDialog(NULL, NULL, L"Save Failed", std::format(L"Failed to save data to {}.", filepath).c_str(), NULL, TDCBF_OK_BUTTON | TDCBF_OK_BUTTON, TD_INFORMATION_ICON, NULL);
+                        file.close();
+                    }
+                    CoTaskMemFree(filepath);
+                }
+                shell_item->Release();
+            }
+
+        }
+    }
+    pfd->Release();
+
+    paused = old_paused;
+
+    return hr;
+}
+
+HRESULT MainWindow::OpenDialog() 
+{
     IFileDialog* pfd = nullptr;
     /*IFileDialogEvents* pfde = nullptr;*/
     IShellItem* shell_item = nullptr;
@@ -950,10 +1170,14 @@ HRESULT MainWindow::OpenDialog() {
 
     HRESULT hr;
 
+    bool old_paused = paused;
+
     hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
 
     if (FAILED(hr))
         return hr;
+
+    paused = true;
 
     hr = pfd->QueryInterface(IID_PPV_ARGS(&pfdc));
 
@@ -961,7 +1185,7 @@ HRESULT MainWindow::OpenDialog() {
         pfd->SetFileTypes(ARRAYSIZE(file_filter), file_filter);
         pfd->SetDefaultExtension(L"len");
 
-        hr = pfd->Show(NULL);
+        hr = pfd->Show(m_hwnd);     // if you pass NULL instead the parent window won't be disabled while dialog box is open
 
         if (SUCCEEDED(hr)) {
             hr = pfd->GetResult(&shell_item);
@@ -979,10 +1203,30 @@ HRESULT MainWindow::OpenDialog() {
                             std::format(L"Could not open {} for reading.", filepath).c_str(), NULL, TDCBF_OK_BUTTON | TDCBF_OK_BUTTON, TD_INFORMATION_ICON, NULL);
                     }
                     else {
-                        if (leniagrid->load(file))
+                        LeniaBase* newlenia = LeniaIOHandler::load(file); 
+                        if (newlenia==nullptr)
                             TaskDialog(NULL, NULL, L"Error", std::format(L"Failed to load data from {}.", filepath).c_str(), NULL, TDCBF_OK_BUTTON | TDCBF_OK_BUTTON, TD_INFORMATION_ICON, NULL);
-                        else
+                        else {                       
+                            // smart pointer should automatically call previous object's dtor
+                            leniagrid.reset(newlenia);   
+
                             UpdateDials();
+
+                            if ((window_mode == LENIA_MODE) && (leniagrid->get_depth() > 1)) {
+                                SetMode(LENIA3D_MODE);
+                                UpdateRadio();
+                            }
+                            else if ((window_mode == LENIA3D_MODE) && (leniagrid->get_depth() == 1)) {
+                                SetMode(LENIA_MODE);
+                                UpdateRadio();
+                            }
+
+                            Resize();
+                            // need to change mode if necessary
+                            //if ((window_mode == LENIA_MODE) && (leniagrid->get_depth() > 1))
+                            //    SetMode(LENIA3D_MODE);
+                            
+                        }
                         file.close();
                     }
                     CoTaskMemFree(filepath);
@@ -995,8 +1239,95 @@ HRESULT MainWindow::OpenDialog() {
     }
     pfd->Release();
 
+    paused = old_paused;
     return hr;
 }
-   
+void MainWindow::UpdatePauseButton() {
+    if (paused)
+        SendMessage(button_pause, BM_SETIMAGE, (WPARAM)IMAGE_BITMAP, (LPARAM)hPlayIcon);
+    else
+        SendMessage(button_pause, BM_SETIMAGE, (WPARAM)IMAGE_BITMAP, (LPARAM)hPauseIcon);       
+}
 
+void MainWindow::ProcessMouseWheel(int delta) {
 
+    if (delta > 0)
+        ++z_slice;
+    else
+        --z_slice;
+
+    int depth = leniagrid->get_depth();
+
+    if (z_slice < 0)
+        z_slice += depth;
+
+    if (z_slice >= depth)
+        z_slice -= depth;
+
+    return;
+}
+
+void MainWindow::TogglePause() {
+    paused = paused ? false: true;
+    UpdatePauseButton();
+}
+
+void MainWindow::UpdateRadio() {
+    if (window_mode == LENIA3D_MODE) {
+        Button_SetCheck(radio_lenia3d, BST_CHECKED);
+        Button_SetCheck(radio_lenia, BST_UNCHECKED);
+    }
+    else if (window_mode == LENIA_MODE) {
+        Button_SetCheck(radio_lenia, BST_CHECKED);
+        Button_SetCheck(radio_lenia3d, BST_UNCHECKED);
+    }
+}
+
+int MainWindow::ExportBMP(std::fstream& file)
+{
+    BITMAPFILEHEADER bmpfh;
+    BITMAPINFOHEADER bmpih;
+
+    // file header
+    bmpfh.bfType = 0x4D42;      // "BM"
+    bmpfh.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)
+        + grid_width * cell_width * grid_height * cell_height * 4;
+    bmpfh.bfReserved1 = 0;
+    bmpfh.bfReserved2 = 0;
+    bmpfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+
+    // DIB header
+    bmpih.biSize = sizeof(BITMAPINFOHEADER);
+    bmpih.biWidth = grid_width * cell_width;
+    bmpih.biHeight = -grid_height * cell_height;
+    bmpih.biPlanes = 1;
+    bmpih.biBitCount = 32;
+    bmpih.biCompression = BI_RGB;
+    bmpih.biSizeImage = 0;
+    bmpih.biXPelsPerMeter = 0;
+    bmpih.biYPelsPerMeter = 0;
+    bmpih.biClrImportant = 0;
+    bmpih.biClrUsed = 0;
+
+    file.write(reinterpret_cast<char*>(&bmpfh), sizeof(BITMAPFILEHEADER));
+    file.write(reinterpret_cast<char*>(&bmpih), sizeof(BITMAPINFOHEADER));
+
+    // the pixel array
+    for (int y = 0; y < grid_height; y++) 
+        for (int t = 0; t < cell_height; t++) 
+            for (int x = 0; x < grid_width; x++) 
+                for (int u = 0; u < cell_width; u++) {
+                    uint32_t rgba;
+                    if (window_mode == LENIA_MODE)
+                        rgba = (*cmap)(leniagrid->get(x, y));
+                    else if (window_mode == LENIA3D_MODE)
+                        rgba = (*cmap)(leniagrid->get(x, y, z_slice));
+                    file.write(reinterpret_cast<char*>(&rgba), sizeof(uint32_t));
+                }
+
+    if (!file)
+        return -1;
+    else
+        return 0;
+}
+}

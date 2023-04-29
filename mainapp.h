@@ -2,19 +2,22 @@
 #include <windows.h>
 #include <d2d1.h>
 
-#include "mainapp.h"
 #include "mainwin.h"
 
-class MainApp {
-public:
-	MainApp();
-	//~MainApp();
+namespace app {
 
-	HRESULT Initialize();
-	void RunMessageLoop();
+	class MainApp {
+	public:
+		MainApp();
+		~MainApp();
 
-private:
+		HRESULT Initialize();
+		void RunMessageLoop();
 
-	MainWindow win;
-}; 
+	private:
+
+		MainWindow win;
+	};
+
+}
 

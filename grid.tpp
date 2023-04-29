@@ -6,39 +6,55 @@
 #define GRID_TPP
 
 template <typename T>
-Grid<T>::Grid() {
+Grid<T>::Grid(int h, int w): Grid(h,w,1) {}
+
+template <typename T>
+Grid<T>::Grid(int h, int w, int d) : 
+	logheight(h), logwidth(w), logdepth(d) {
+	height = 1 << h;
+	width = 1 << w;
+	depth = 1 << d;
+	total = height * width * depth;
+
+	CreateData();
 }
 
 template <typename T>
-Grid<T>::Grid(int h, int w): logheight(h), logwidth(w) {
-	height = 1 << h;
-	width = 1 << w;
-	total = height * width;
-
+void Grid<T>::CreateData() {
 	value = new T[total];
 	aux_grid = new T[total];
 }
 
 template <typename T>
-Grid<T>::~Grid() {
+void Grid<T>::DestroyData() {
 	delete[] value;
 	delete[] aux_grid;
 }
 
+
 template <typename T>
-T Grid<T>::get(int x, int y) {			// this assumes value is not null, not checking for efficiency
+Grid<T>::~Grid() {
+	DestroyData();
+}
+
+template <typename T>
+T Grid<T>::get(int x, int y) {			// this assumes value is not null, and doesn't check
 	return value[x + (y * width)];	
 }
 
 template <typename T>
-int Grid<T>::size() {			
-	return total;
+T Grid<T>::get(int x, int y, int z) {			
+	return value[x + (y + z *height)*width];
 }
-
 
 template <typename T>
 void Grid<T>::set(int x, int y, T v) {
 	value[x + (y * width)] = v;
+}
+
+template <typename T>
+void Grid<T>::set(int x, int y, int z, T v) {
+	value[(z * height + y) * width + x] = v;
 }
 
 template <typename T>
@@ -49,19 +65,9 @@ void Grid<T>::randomize(int n, int m) {
 
 template <typename T>
 void Grid<T>::setup() {
-	//for (int i = 0; i < total; i++) 
-	//	if (i % 2 == 1)
-	//		value[i] = 1;
-	//	else
-	//		value[i] = 0;
+
 	for (int i = 0; i < total; i++)
 		value[i] = 0;
-
-	//set(3, 1, 1);
-	//set(1, 2, 1);
-	//set(3, 2, 1);
-	//set(2, 3, 1);
-	//set(3, 3, 1);
 
 	set(3, 1, 1);
 	set(1, 2, 1);
@@ -71,18 +77,8 @@ void Grid<T>::setup() {
 }
 
 template <typename T>
-int Grid<T>::get_height() {
-	return height;
-}
-
-template <typename T>
-int Grid<T>::get_width() {
-	return width;
-}
-
-template <typename T>
-int Grid<T>::num_neighs(int x, int y) {
-	int num = 0;
+T Grid<T>::num_neighs(int x, int y) {
+	T num = 0;
 
 	int xplus, xmin, yplus, ymin;
 

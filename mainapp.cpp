@@ -3,8 +3,8 @@
 #include <windows.h>
 #include <CommCtrl.h>
 
-#include "mainwin.h"
-#include "mainapp.h"
+#include "headers/mainwin.h"
+#include "headers/mainapp.h"
 
 #pragma comment(lib, "d2d1")
 

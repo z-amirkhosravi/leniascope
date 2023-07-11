@@ -7,7 +7,7 @@
 #include <iostream>
 
 #include "fftw_lib/fftw3.h"
-#include "lengrid.h"
+#include "headers/lengrid.h"
 
 #define LEN_FILE_SIGNATURE		"Leniav1"
 #define WRITE(f, out)			(f).write(reinterpret_cast<char *>(&(out)), sizeof((out)))

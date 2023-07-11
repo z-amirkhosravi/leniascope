@@ -13,9 +13,9 @@
 #include <memory>
 #include <map>
 
-#include "cmap.h"
-#include "mainwin.h"
-#include "grid.h"
+#include "headers/cmap.h"
+#include "headers/mainwin.h"
+#include "headers/grid.h"
 
 #define SKY_BLUE                RGB(0x87, 0xCE, 0xEB);
 

@@ -1,6 +1,6 @@
 #include <vector>
 #include <windows.h>
-#include "grid.h"
+#include "headers/grid.h"
 
 #ifndef GRID_TPP
 #define GRID_TPP

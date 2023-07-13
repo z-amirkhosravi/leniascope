@@ -1,16 +1,18 @@
 # Leniascope
 
-This is an implementation of <a href=https://chakazul.github.io/>Bert Chan</a>'s <a href=https://en.wikipedia.org/wiki/Lenia>Lenia</a> in C++ for Windows.
+<img src=images/orbium.bmp height=300 width=300>
+
+This is an implementation of <a href=https://chakazul.github.io/>Bert Chan</a>'s <a href=https://en.wikipedia.org/wiki/Lenia>Lenia</a> in C++ and Win32 API.
 
 Lenia is a continuous generalization of Conway's <a href=https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life>Game of Life</a>, where:
 
 - The on/off state of each pixel is replaced by a value in the real interval [0,1].
-- The "neighbour count" of each pixel is replaced by the weighted average of an area around the pixel
-- The discrete change in state is replaced by growth via a difference equation modeling an ODE
+- The "neighbour count" of each pixel is replaced by a weighted average of an area around the pixel.
+- The discrete change in state is replaced by growth via a difference equation modeling an ODE.
 
 # Implementation
 
-The version here is coded in Visual Studio C++ using the Win32 API. 
+The version here is coded in Visual Studio C++ using the Win32 API. This was partly an exercise to learn Windows programming, so the interface was coded entirely by hand rather than generated with Visual Studio's tools. Probably the best practice is to use the automated tools as much as possible to keep the repetitive parts of the coded organized in a uniform way. On the other hand, even very basic features will require altering the window message pipeline using tricks that are standard but not straight-forward.
 
 # Features
 
@@ -20,7 +22,7 @@ Here's an annotated screenshot of the application:
 <img src=images/screenshot.jpg>
 </fig>
 
-The simplest way to play with the program is to press the **Randomimze** button, which erases the buffer and re-initializes it randomly, then wait to see if an interesting pattern emerges, and either
+The simplest way to play with the program is to press the **Randomize** button, which erases the buffer and re-initializes it randomly, then wait to see if an interesting pattern emerges, and either
 randomize again or alter the parameters a little bit.
 
 The mathematical parameters are in the upper right corner:

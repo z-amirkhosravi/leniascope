@@ -10,10 +10,6 @@ Lenia is a continuous generalization of Conway's <a href=https://en.wikipedia.or
 - The "neighbour count" of each pixel is replaced by a weighted average of an area around the pixel.
 - The discrete change in state is replaced by growth via a difference equation modeling an ODE.
 
-# Implementation
-
-The version here is coded in Visual Studio C++ using the Win32 API. This was partly an exercise to learn Windows programming, so the interface was coded entirely by hand rather than generated with Visual Studio's tools. Probably the best practice is to use the automated tools as much as possible to keep the repetitive parts of the coded organized in a uniform way. On the other hand, even very basic features will require altering the window message pipeline using tricks that are standard but not straight-forward.
-
 # Features
 
 Here's an annotated screenshot of the application:
@@ -41,6 +37,12 @@ In the bottom right corner you can choose the colour map that assigns a color to
 
 There is also a "3D Lenia" mode, which adds a third "z-axis" dimension to the grid. It displays one 2D "z-slice" at a time, which you can change by scrolling the middle mouse button.
 
+
+# Implementation
+
+The version here is coded in Visual Studio C++ using the Win32 API. This was partly an exercise to learn Windows programming, so the interface was coded entirely by hand rather than generated with Visual Studio's tools. Probably the best practice is to use the automated tools as much as possible to keep the repetitive parts of the coded organized in a uniform way. On the other hand, even very basic features will require altering the window message pipeline using tricks that are standard but not straight-forward.
+
+The computation part amounts to calculating a 2D convolution of the grid with a fixed kernel, so the fast Fourier transform comes in handy. The first version of Leniascope had my own implementation of <a href=https://en.wikipedia.org/wiki/Cooley%E2%80%93Tukey_FFT_algorithm>Cooley-Tukey</a>'s radix-2 algorithm, including optimizations accounting for the fact that the data is real rather than complex. You can still find that implementation in the `fft.cpp` file, and the coded that uses it in the `customfft` branch. The current `master` uses the <a href=https://www.fftw.org/>fftw</a> library, which has many fine-tuned optimizations, is several orders of magnitude faster, and is free. 
 
 
   

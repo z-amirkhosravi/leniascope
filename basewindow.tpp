@@ -3,7 +3,7 @@
 #define BASEWINDOW_TPP
 
 #include <windows.h>
-#include "basewindow.h"
+#include "headers/basewindow.h"
 
 template<class DerivedWindowType>
 BaseWindow<DerivedWindowType>::BaseWindow() {

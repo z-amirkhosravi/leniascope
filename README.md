@@ -51,9 +51,9 @@ In Conway's Game of Life, random initial states usually lead to periodic pattern
 <img src=images\plants.jpg height=450 width=450>
 
 One would think that the rules somehow do not force enough self-interactions, were it not for the existence of the "Orbium" (pictured before). It is really quite astonishing: it moves, has bilateral 
-symmetry like actual living animals, and even looks vaguely like a jellyfish. It's also relatively stable under parameter change -- for instance in Leniascope you can first contruct an orbium with a small kernel radius of around 15, then slowly increase that radius as the program runs. The orbium will adapt and grow larger, and become more detailed.
+symmetry like actual living animals, and even looks vaguely like a jellyfish. It's also relatively stable under parameter change -- for instance in Leniascope you can first contruct an orbium with a small kernel radius of around 15, then slowly increase that radius as the program runs. The orbium will adapt and grow larger, and become more detailed. 
 
-But in 3D Lenia, every random initial patterns that I've seen eventually ends up in either everything dying, or a 3D version of the same plant-like static pattern. It seems that the third degree of freedom is just too much: not restrictive enough to force complex interactions. 
+But in 3D Lenia, every random initial pattern that I've seen eventually ends up in either everything dying, or a 3D version of the same plant-like static pattern. It seems that the third degree of freedom is just too much: not restrictive enough to force complex interactions. 
 
 Consider the the following typical pattern in 2D Lenia:
 

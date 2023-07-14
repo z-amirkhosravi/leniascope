@@ -59,6 +59,10 @@ Consider the the following typical pattern in 2D Lenia:
 
 <img src=images\plantorb.bmp height=450 width=450>
 
-It is the same usual pattern in the process of spreading out to take over the grid. On the edges of its "wavefront" it is typically undulating and uneven, and often includes half-formed orbiums attempting to break away from the main mass. But in 3D Lenia you don't see this at all. The edges of the analogous spreading pattern are much more uniform, as if the mass is spreading without needing to compete with itself for space. 
+It is the same usual pattern in the process of spreading out to take over the grid. On the edges of its "wavefront" it is typically undulating and uneven, and often includes half-formed orbiums attempting to break away from the main mass. 
+
+But in 3D Lenia you don't see this at all. The edges of the analogous spreading pattern are much more uniform, as if the mass is spreading without needing to compete with itself for space:
+
+<img src=images\3dplants.bmp height=400 width=400>
 
 Is it possible to find a more restrictive 3D generalization of Lenia that forces more space competition on spreading matter? Perhaps that is the way to find the 3D orbium.

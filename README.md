@@ -46,20 +46,19 @@ The computational part amounts to calculating a 2D convolution of the current st
 
 # General Thoughts
 
-In Conway's Game of Life, when you start with random data, quite often it will result in periodic patterns after a few turns. You almost never get the entire grid filled out with a static repeating pattern. In Lenia on the other hand, most initial data that doesn't eventually die off evolves into the same type of almost plant-like pseudo-periodic organism:
+In Conway's Game of Life, when you start with random data, quite often it will result in periodic patterns after a few turns. You get die-offs quite often, but you rarely see the entire grid filled out with a static repeating pattern. In Lenia on the other hand, most initial data of enough mass evolves into the same type of almost plant-like pseudo-periodic organism:
 
 <img src=images\plants.jpg height=300 width=300>
 
-One would think that the rules somehow do not force enough self-interactions, were it not for the existence of the "Orbium" (first picture above). It is really quite astonishing: it has bilateral 
-symmetry like actual living animals, and even looks like a jellyfish! It's also relatively stable under parameter change. For instance in Leniascope you can first set the kernel radius to something small like 15 until you find an orbium, then slowly increase the kernel radius while the program is running: the orbium will adapt and grow along with it.
+One would think that the rules somehow do not force enough self-interactions, were it not for the existence of the "Orbium" (first picture above). It is really quite astonishing: it moves, has bilateral 
+symmetry like actual living animals, and even looks like a jellyfish! It's also relatively stable under parameter change. For instance in Leniascope you can first contruct an orbium with a small kernel radius like around 15, then slowly increase the radius while the program runs: the orbium will adapt and grow, and become more detailed.
 
-But in 3D Lenia, every random initial patterns that I tried eventually ends up either in a blank grid (everything dying), or the 3D version of the same plant-link static pattern as above. It seems that the third degree of freedom is just not restrictive enough to force interesting interactions. 
+But in 3D Lenia, every random initial patterns that I've seen eventually ends up either in everything dying, or a 3D version of the same plant-link static pattern. It seems that the third degree of freedom is just not restrictive enough to force interesting interactions. 
 
 Consider the the following typical pattern in 2D Lenia:
 
-<img src=images\plantorb.bmp height=300 width=300>
+<img src=images\plantorb.bmp height=400 width=400>
 
-It is the same static pattern spreading out to take over the grid. On the edges where it's spreading, you can see uneven patterns, and one half-formed Orbium attempting to break-out. You can often see these almost-orbiums
-on the edges when the static pattern is spreading. But in 3D Lenia you don't see this at all. The edges of the spreading pattern are much more uniform, as if the organic matter is spreading without needing to compete with itself for space. 
+It is the same ususal pattern in the process of spreading out to take over the grid. On the edges of its "wavefront" the pattern is typically uneven, and sometimes includes half-formed orbiums attempting to break away from the main mass (and often failing). But in 3D Lenia you don't see this at all. The edges of the analogous spreading pattern are much more uniform, as if the mass is spreading comfortably without needing to compete with itself for space. 
 
-Is it possible to find a better 3D generalization of Lenia that forces more space competition for the spreading matter?
+Is it possible to find a more restrictive 3D generalization of Lenia that forces more space competition on spreading matter? Perhaps that is the way to find the 3D analogue of the orbium.

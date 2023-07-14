@@ -112,8 +112,9 @@
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <FloatingPointModel>Fast</FloatingPointModel>
-      <AdditionalIncludeDirectories>.\fftw-3.3.5-dll32</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)fftw-3.3.5-dll32</AdditionalIncludeDirectories>
       <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -121,8 +122,9 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalManifestDependencies>"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'";%(AdditionalManifestDependencies)</AdditionalManifestDependencies>
-      <AdditionalLibraryDirectories>$(ProjectDir)\fftw_lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>$(ProjectDir)\fftw_lib\libfftw3-3.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)fftw_lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>$(ProjectDir)fftw_lib\libfftw3-3.lib;$(ProjectDir)fftw_lib\libfftw3f-3.lib;$(ProjectDir)fftw_lib\libfftw3l-3.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <TargetMachine>MachineX86</TargetMachine>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">

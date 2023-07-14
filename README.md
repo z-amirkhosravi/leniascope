@@ -46,12 +46,20 @@ The computational part amounts to calculating a 2D convolution of the current st
 
 # General Thoughts
 
-In Conway's Game of Life, when you start with random data, quite often it will result in periodic patterns after a few turns. In Lenia on the other hand, most initial data evolves into the same type of static pattern:
+In Conway's Game of Life, when you start with random data, quite often it will result in periodic patterns after a few turns. You almost never get the entire grid filled out with a static repeating pattern. In Lenia on the other hand, most initial data that doesn't eventually die off evolves into the same type of almost plant-like pseudo-periodic organism:
 
 <img src=images\plants.jpg height=300 width=300>
 
-One might think that the rules somehow do not force enough self-interactions, were it not for the existence of the "Orbium" (first picture above). I find the existence of this pattern quite astonishing. It even looks like a jellyfish! 
+One would think that the rules somehow do not force enough self-interactions, were it not for the existence of the "Orbium" (first picture above). It is really quite astonishing: it has bilateral 
+symmetry like actual living animals, and even looks like a jellyfish! It's also relatively stable under parameter change. For instance in Leniascope you can first set the kernel radius to something small like 15 until you find an orbium, then slowly increase the kernel radius while the program is running: the orbium will adapt and grow along with it.
 
-But in 3D Lenia, all random initial patterns that I tried eventually end up either in a blank grid (everything dying), or the same plant-link static pattern as in the 2D version. It seems that the third degree of freedom is just not restrictive enough. 
+But in 3D Lenia, every random initial patterns that I tried eventually ends up either in a blank grid (everything dying), or the 3D version of the same plant-link static pattern as above. It seems that the third degree of freedom is just not restrictive enough to force interesting interactions. 
 
-Consider the e
+Consider the the following typical pattern in 2D Lenia:
+
+<img src=images\plantorb.bmp height=300 width=300>
+
+It is the same static pattern spreading out to take over the grid. On the edges where it's spreading, you can see uneven patterns, and one half-formed Orbium attempting to break-out. You can often see these almost-orbiums
+on the edges when the static pattern is spreading. But in 3D Lenia you don't see this at all. The edges of the spreading pattern are much more uniform, as if the organic matter is spreading without needing to compete with itself for space. 
+
+Is it possible to find a better 3D generalization of Lenia that forces more space competition for the spreading matter?

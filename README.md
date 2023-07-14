@@ -46,6 +46,12 @@ The computational part amounts to calculating a 2D convolution of the current st
 
 # General Thoughts
 
-In Conway's Game of Life, if you initially start with random data, most likely you will end up with several periodic patterns immmediately. In Lenia, most initial data evolves into the same type of static pattern
+In Conway's Game of Life, when you start with random data, quite often it will result in periodic patterns after a few turns. In Lenia on the other hand, most initial data evolves into the same type of static pattern:
 
+<img src=images\plants.jpg height=300 width=300>
 
+One might think that the rules somehow do not force enough self-interactions, were it not for the existence of the "Orbium" (first picture above). I find the existence of this pattern quite astonishing. It even looks like a jellyfish! 
+
+But in 3D Lenia, all random initial patterns that I tried eventually end up either in a blank grid (everything dying), or the same plant-link static pattern as in the 2D version. It seems that the third degree of freedom is just not restrictive enough. 
+
+Consider the e

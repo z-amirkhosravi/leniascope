@@ -33,7 +33,7 @@ The **Export** button saves the current buffer as a bitmap image.
 
 The **Pause/Play** is self-explanatory. It can be useful if you want to pick the right moment to export an image.
 
-In the bottom right corner you can choose the colour map that assigns a colour to the real values. The choices are copied from Python's matplotlib, so they might be familiar.
+In the bottom right corner you can choose the color map that assigns a color to the real values. The choices are copied from Python's matplotlib, so they might be familiar.
 
 There is also an experimental "3D Lenia" mode, which adds a third "z-axis" dimension to the grid. It displays one 2D "z-slice" at a time however, but you can change which slice that is by scrolling the middle mouse button.
 

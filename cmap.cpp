@@ -1,8 +1,8 @@
 #include "headers/cmap.h"
 #include <vector>
 #include <iostream>
-#include <windows.h>
-#include <d2d1.h>
+#include <algorithm>
+
 
 //class LinearSegmentedFunction {
 //
@@ -37,9 +37,9 @@ namespace cmap {
 			i++;
 
 		if (i == data.size() - 1)
-			return data[i][2];
+			return static_cast<unsigned char>(std::clamp(data[i][2], 0.0, 255.0));
 
-		return data[i][2] + (data[i + 1][1] - data[i][2]) * (x - data[i][0]) / (data[i + 1][0] - data[i][0]);
+		return static_cast<unsigned char>(std::clamp(data[i][2] + (data[i + 1][1] - data[i][2]) * (x - data[i][0]) / (data[i + 1][0] - data[i][0]), 0.0, 255.0));
 
 		//auto it = data.begin();
 		//while (it < data.end() && (it + 1) < data.end() && (*(it + 1))[0] <= x)

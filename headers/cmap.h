@@ -1,8 +1,8 @@
 #ifndef CMAP_H
 #define CMAP_H
 
-#include <Windows.h>
-#include <d2d1.h>
+#include <cstdint>
+
 
 #include <vector>
 #include <string>

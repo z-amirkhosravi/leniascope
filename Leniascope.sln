@@ -1,0 +1,28 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "Leniascope", "Leniascope.vcxproj", "{8CF0D661-8A31-492A-92AF-C6ECB1F6D39D}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "LeniascopeCli", "LeniascopeCli.vcxproj", "{E012BC48-508F-443C-BFEB-27F8267B401F}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "CoreTests", "tests\CoreTests.vcxproj", "{38FB913F-AB4D-4216-93DE-F5BBD4B3B626}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8CF0D661-8A31-492A-92AF-C6ECB1F6D39D}.Debug|x64.ActiveCfg = Debug|x64
+		{8CF0D661-8A31-492A-92AF-C6ECB1F6D39D}.Debug|x64.Build.0 = Debug|x64
+		{8CF0D661-8A31-492A-92AF-C6ECB1F6D39D}.Release|x64.ActiveCfg = Release|x64
+		{8CF0D661-8A31-492A-92AF-C6ECB1F6D39D}.Release|x64.Build.0 = Release|x64
+		{E012BC48-508F-443C-BFEB-27F8267B401F}.Debug|x64.ActiveCfg = Debug|x64
+		{E012BC48-508F-443C-BFEB-27F8267B401F}.Debug|x64.Build.0 = Debug|x64
+		{E012BC48-508F-443C-BFEB-27F8267B401F}.Release|x64.ActiveCfg = Release|x64
+		{E012BC48-508F-443C-BFEB-27F8267B401F}.Release|x64.Build.0 = Release|x64
+		{38FB913F-AB4D-4216-93DE-F5BBD4B3B626}.Debug|x64.ActiveCfg = Release|x64
+		{38FB913F-AB4D-4216-93DE-F5BBD4B3B626}.Debug|x64.Build.0 = Release|x64
+		{38FB913F-AB4D-4216-93DE-F5BBD4B3B626}.Release|x64.ActiveCfg = Release|x64
+		{38FB913F-AB4D-4216-93DE-F5BBD4B3B626}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+EndGlobal

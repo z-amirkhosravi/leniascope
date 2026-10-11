@@ -1,0 +1,553 @@
+#define WIN32_LEAN_AND_MEAN
+#include "backends/imgui_impl_dx11.h"
+#include "backends/imgui_impl_win32.h"
+#include "imgui.h"
+#include "renderer.h"
+#include "runner.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <commdlg.h>
+#include <filesystem>
+#include <fstream>
+#include <thread>
+#include <windows.h>
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+namespace {
+using namespace lenia;
+UINT pending_width = 0, pending_height = 0;
+bool minimized = false;
+float requested_dpi = 0;
+LRESULT WINAPI window_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (ImGui_ImplWin32_WndProcHandler(h, m, w, l))
+        return 1;
+    switch (m) {
+    case WM_SIZE:
+        minimized = w == SIZE_MINIMIZED;
+        if (!minimized) {
+            pending_width = LOWORD(l);
+            pending_height = HIWORD(l);
+        }
+        return 0;
+    case WM_DPICHANGED: {
+        requested_dpi = HIWORD(w) / 96.f;
+        auto r = reinterpret_cast<RECT *>(l);
+        SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+    }
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    case WM_SYSCOMMAND:
+        if ((w & 0xfff0) == SC_KEYMENU)
+            return 0;
+        break;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+std::string utf8(const wchar_t *w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    std::string result(size_t(n), 0);
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, result.data(), n, nullptr, nullptr);
+    result.pop_back();
+    return result;
+}
+std::string choose_file(HWND window, bool save, bool image = false) {
+    wchar_t filename[32768] = {};
+    OPENFILENAMEW f{};
+    f.lStructSize = sizeof f;
+    f.hwndOwner = window;
+    f.lpstrFile = filename;
+    f.nMaxFile = 32768;
+    f.lpstrFilter =
+        image ? L"Bitmap image\0*.bmp\0\0" : L"Leniascope checkpoint\0*.lenia;*.len\0All files\0*.*\0\0";
+    f.lpstrDefExt = image ? L"bmp" : L"lenia";
+    f.Flags = OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    bool ok = save ? GetSaveFileNameW(&f) : GetOpenFileNameW(&f);
+    return ok ? utf8(filename) : std::string();
+}
+void style(float scale) {
+    ImGui::GetStyle() = ImGuiStyle();
+    ImGui::StyleColorsDark();
+    auto &s = ImGui::GetStyle();
+    s.WindowRounding = 0;
+    s.ChildRounding = 6;
+    s.FrameRounding = 4;
+    s.GrabRounding = 4;
+    s.WindowBorderSize = 0;
+    s.FramePadding = {10, 7};
+    s.ItemSpacing = {10, 9};
+    s.WindowPadding = {18, 16};
+    s.Colors[ImGuiCol_WindowBg] = {.055f, .069f, .09f, 1};
+    s.Colors[ImGuiCol_ChildBg] = {.073f, .088f, .11f, 1};
+    s.Colors[ImGuiCol_FrameBg] = {.12f, .15f, .19f, 1};
+    s.Colors[ImGuiCol_Button] = {.13f, .23f, .28f, 1};
+    s.Colors[ImGuiCol_ButtonHovered] = {.16f, .37f, .42f, 1};
+    s.Colors[ImGuiCol_ButtonActive] = {.15f, .46f, .48f, 1};
+    s.Colors[ImGuiCol_CheckMark] = {.38f, .85f, .77f, 1};
+    s.Colors[ImGuiCol_SliderGrab] = {.38f, .85f, .77f, 1};
+    s.Colors[ImGuiCol_Text] = {.89f, .93f, .95f, 1};
+    s.Colors[ImGuiCol_TextDisabled] = {.48f, .56f, .64f, 1};
+    s.ScaleAllSizes(scale);
+}
+void save_backbuffer(ID3D11Device *device, ID3D11DeviceContext *context, IDXGISwapChain *swap,
+                     const std::string &path) {
+    ComPtr<ID3D11Texture2D> buffer, copy;
+    check(swap->GetBuffer(0, IID_PPV_ARGS(&buffer)), "Get screenshot buffer");
+    D3D11_TEXTURE2D_DESC d{};
+    buffer->GetDesc(&d);
+    d.Usage = D3D11_USAGE_STAGING;
+    d.BindFlags = 0;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    check(device->CreateTexture2D(&d, nullptr, &copy), "Create screenshot buffer");
+    context->CopyResource(copy.Get(), buffer.Get());
+    D3D11_MAPPED_SUBRESOURCE m{};
+    check(context->Map(copy.Get(), 0, D3D11_MAP_READ, 0, &m), "Read screenshot");
+    std::vector<uint8_t> pixels(size_t(d.Width) * d.Height * 4);
+    for (UINT y = 0; y < d.Height; ++y)
+        for (UINT x = 0; x < d.Width; ++x) {
+            const auto *src = static_cast<const uint8_t *>(m.pData) + size_t(y) * m.RowPitch + x * 4;
+            auto *dst = pixels.data() + (size_t(y) * d.Width + x) * 4;
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            dst[3] = 255;
+        }
+    context->Unmap(copy.Get(), 0);
+    BITMAPFILEHEADER f{};
+    f.bfType = 0x4d42;
+    f.bfOffBits = 54;
+    f.bfSize = 54 + DWORD(pixels.size());
+    BITMAPINFOHEADER i{};
+    i.biSize = 40;
+    i.biWidth = d.Width;
+    i.biHeight = -LONG(d.Height);
+    i.biPlanes = 1;
+    i.biBitCount = 32;
+    std::ofstream out(std::filesystem::u8path(path), std::ios::binary);
+    out.write(reinterpret_cast<char *>(&f), sizeof f);
+    out.write(reinterpret_cast<char *>(&i), sizeof i);
+    out.write(reinterpret_cast<char *>(pixels.data()), pixels.size());
+    if (!out)
+        throw std::runtime_error("Screenshot write failed");
+}
+void draw_box(const ViewSettings &v, const Config &c, ImVec2 origin, ImVec2 size) {
+    float cp = std::cos(v.pitch), sp = std::sin(v.pitch), cy = std::cos(v.yaw), sy = std::sin(v.yaw),
+          maximum = float(std::max({c.width, c.height, c.depth}));
+    ImVec2 points[8];
+    for (int i = 0; i < 8; ++i) {
+        float x = ((i & 1) ? .5f : -.5f) * c.width / maximum - sy * cp * v.distance,
+              y = ((i & 2) ? .5f : -.5f) * c.height / maximum - sp * v.distance,
+              z = ((i & 4) ? .5f : -.5f) * c.depth / maximum - cy * cp * v.distance;
+        float depth = -sy * cp * x - sp * y - cy * cp * z;
+        if (depth <= 0)
+            return;
+        float px = cy * x - sy * z, py = -sy * sp * x + cp * y - cy * sp * z;
+        points[i] = {origin.x + (.5f + px / depth / (size.x / size.y)) * size.x,
+                     origin.y + (.5f - py / depth) * size.y};
+    }
+    auto *draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(origin, {origin.x + size.x, origin.y + size.y}, true);
+    for (int i = 0; i < 8; ++i)
+        for (int axis : {1, 2, 4})
+            if (!(i & axis))
+                draw->AddLine(points[i], points[i | axis], IM_COL32(100, 150, 164, 95));
+    draw->PopClipRect();
+}
+int run(HINSTANCE instance, int show, bool smoke) {
+    ImGui_ImplWin32_EnableDpiAwareness();
+    WNDCLASSEXW wc{sizeof wc,
+                   CS_CLASSDC,
+                   window_proc,
+                   0,
+                   0,
+                   instance,
+                   nullptr,
+                   LoadCursor(nullptr, IDC_ARROW),
+                   nullptr,
+                   nullptr,
+                   L"LeniascopeModern",
+                   nullptr};
+    RegisterClassExW(&wc);
+    HWND window = CreateWindowW(wc.lpszClassName, L"Leniascope | Laboratory", WS_OVERLAPPEDWINDOW, 100, 80,
+                                1440, 940, nullptr, nullptr, instance, nullptr);
+    if (!window)
+        throw std::runtime_error("Cannot create window");
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    std::string adapter;
+    make_device(device, context, &adapter);
+    ComPtr<IDXGIDevice> dxgi_device;
+    device.As(&dxgi_device);
+    ComPtr<IDXGIAdapter> dxgi_adapter;
+    dxgi_device->GetAdapter(&dxgi_adapter);
+    ComPtr<IDXGIFactory> factory;
+    dxgi_adapter->GetParent(IID_PPV_ARGS(&factory));
+    DXGI_SWAP_CHAIN_DESC desc{};
+    desc.BufferCount = 2;
+    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.OutputWindow = window;
+    desc.SampleDesc.Count = 1;
+    desc.Windowed = TRUE;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    ComPtr<IDXGISwapChain> swap;
+    check(factory->CreateSwapChain(device.Get(), &desc, &swap), "Create swap chain");
+    factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
+    ComPtr<ID3D11RenderTargetView> screen;
+    auto make_target = [&] {
+        ComPtr<ID3D11Texture2D> back;
+        check(swap->GetBuffer(0, IID_PPV_ARGS(&back)), "Get window buffer");
+        check(device->CreateRenderTargetView(back.Get(), nullptr, &screen), "Create window target");
+    };
+    make_target();
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    auto &io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.IniFilename = nullptr;
+    float dpi = ImGui_ImplWin32_GetDpiScaleForHwnd(window);
+    style(dpi);
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    int ww = std::min(int(1440 * dpi), int((work.right - work.left) * .94)),
+        wh = std::min(int(940 * dpi), int((work.bottom - work.top) * .94));
+    SetWindowPos(window, nullptr, work.left + (work.right - work.left - ww) / 2,
+                 work.top + (work.bottom - work.top - wh) / 2, ww, wh, SWP_NOZORDER);
+    io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17 * dpi);
+    ImGui_ImplWin32_Init(window);
+    ImGui_ImplDX11_Init(device.Get(), context.Get());
+    Renderer renderer(device.Get(), context.Get());
+    Runner runner;
+    ViewSettings views[2];
+    views[0].view = 0;
+    bool done = false, dirty_config = false;
+    Config edit;
+    uint64_t shown = 0, seed = 1, shown_generation = UINT64_MAX;
+    int grid_power = 7;
+    float rate = 60;
+    std::string local_message, previous_local_message;
+    auto local_message_until = std::chrono::steady_clock::now();
+    int smoke_frames = 0;
+    bool smoke_exported = false;
+    std::vector<float> history;
+    uint64_t history_step = UINT64_MAX;
+    bool history_volume = true;
+    ShowWindow(window, show);
+    UpdateWindow(window);
+    while (!done) {
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+            if (msg.message == WM_QUIT)
+                done = true;
+        }
+        if (done)
+            break;
+        if (minimized) {
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
+            continue;
+        }
+        if (pending_width && pending_height) {
+            context->OMSetRenderTargets(0, nullptr, nullptr);
+            screen.Reset();
+            check(swap->ResizeBuffers(0, pending_width, pending_height, DXGI_FORMAT_UNKNOWN, 0),
+                  "Resize window");
+            pending_width = pending_height = 0;
+            make_target();
+        }
+        if (requested_dpi > 0 && requested_dpi != dpi) {
+            dpi = requested_dpi;
+            style(dpi);
+            ImGui_ImplDX11_InvalidateDeviceObjects();
+            io.Fonts->Clear();
+            io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17 * dpi);
+            requested_dpi = 0;
+        }
+        auto frame = runner.frame();
+        bool is_volume = frame ? frame->state.config.depth > 1 : true;
+        auto &view = views[is_volume];
+        if (frame && frame->serial != shown) {
+            if (history_volume != is_volume || frame->state.steps < history_step)
+                history.clear();
+            if (history.empty() || frame->state.steps != history_step) {
+                history.push_back(float(frame->measures.mean));
+                if (history.size() > 512)
+                    history.erase(history.begin());
+                history_step = frame->state.steps;
+                history_volume = is_volume;
+            }
+            renderer.upload(frame->state);
+            if (shown_generation != frame->generation || edit.width != frame->state.config.width ||
+                edit.depth != frame->state.config.depth) {
+                dirty_config = false;
+                edit = frame->state.config;
+                seed = frame->state.seed;
+                grid_power = int(std::log2(edit.width));
+            } else if (!dirty_config)
+                edit = frame->state.config;
+            shown = frame->serial;
+            shown_generation = frame->generation;
+        }
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+        const auto display = io.DisplaySize;
+        ImGui::SetNextWindowPos({0, 0});
+        ImGui::SetNextWindowSize(display);
+        ImGui::Begin("Laboratory", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        ImGui::TextColored({.38f, .85f, .77f, 1}, "LENIASCOPE");
+        ImGui::SameLine();
+        ImGui::TextDisabled(" /  laboratory");
+        ImGui::SameLine(300 * dpi);
+        try {
+            if (ImGui::Button(frame && frame->running ? "Pause" : "Play", {88 * dpi, 0}) ||
+                (ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
+                runner.play(!(frame && frame->running));
+            ImGui::SameLine();
+            if (ImGui::Button("Step"))
+                runner.step();
+            ImGui::SameLine();
+            if (ImGui::Button("Reset"))
+                runner.reset(frame ? frame->state.config : edit, seed);
+            ImGui::SameLine();
+            if (ImGui::Button("New seed")) {
+                ++seed;
+                runner.reset(frame ? frame->state.config : edit, seed);
+            }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(180 * dpi);
+            if (ImGui::SliderFloat("steps/s", &rate, 1, 240, "%.0f"))
+                runner.speed(rate);
+        } catch (const std::exception &e) {
+            local_message = e.what();
+        }
+        ImGui::Separator();
+        float status_height = 42 * dpi;
+        float available_height = std::max(100.f, ImGui::GetContentRegionAvail().y - status_height);
+        float panel_width = std::min(320 * dpi, display.x * .36f);
+        ImGui::BeginChild("Inspector", {panel_width, available_height}, ImGuiChildFlags_Borders);
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * .60f);
+        try {
+            ImGui::TextDisabled("SIMULATION");
+            int mode = is_volume ? 1 : 0;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("##dimension", &mode, "2D field\0 3D volume\0")) {
+                runner.mode(mode == 1);
+                dirty_config = false;
+            }
+            bool gpu = frame && frame->gpu;
+            if (ImGui::Checkbox("GPU compute (float32)", &gpu))
+                runner.backend(gpu);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("CPU uses double precision. GPU trajectories may diverge over long runs.");
+            ImGui::Spacing();
+            ImGui::Text("Model parameters");
+            float mu = float(edit.mu), sigma = float(edit.sigma), dt = float(edit.dt);
+            if (ImGui::SliderFloat("Mean", &mu, .01f, .5f, "%.4f")) {
+                edit.mu = mu;
+                dirty_config = true;
+            }
+            if (ImGui::SliderFloat("Width", &sigma, .001f, .1f, "%.4f")) {
+                edit.sigma = sigma;
+                dirty_config = true;
+            }
+            if (ImGui::SliderFloat("Time step", &dt, .001f, .5f, "%.4f")) {
+                edit.dt = dt;
+                dirty_config = true;
+            }
+            int max_radius = std::min(edit.width, edit.height) / 2;
+            if (edit.depth > 1)
+                max_radius = std::min(max_radius, edit.depth / 2);
+            if (ImGui::SliderInt("Radius", &edit.radius, 1, max_radius))
+                dirty_config = true;
+            int rule = int(edit.rule);
+            if (ImGui::Combo("Rule", &rule, "Classic Lenia\0Smooth reaction (experiment)\0")) {
+                edit.rule = Rule(rule);
+                dirty_config = true;
+            }
+            if (rule == 1) {
+                float sharp = float(edit.smoothness);
+                if (ImGui::SliderFloat("Sharpness", &sharp, 1, 40)) {
+                    edit.smoothness = sharp;
+                    dirty_config = true;
+                }
+                ImGui::TextWrapped(
+                    "Smooth bounded birth/death model. Different dynamics; empty regions can nucleate.");
+            }
+            if (ImGui::Button(dirty_config ? "Apply changes *" : "Apply changes", {-1, 0})) {
+                runner.parameters(edit);
+                dirty_config = false;
+            }
+            if (ImGui::CollapsingHeader("Grid and initialization")) {
+                ImGui::SliderInt("Power of two", &grid_power, 4, is_volume ? 8 : 11);
+                ImGui::Text("%d x %d%s", 1 << grid_power, 1 << grid_power, is_volume ? " x same" : "");
+                ImGui::InputScalar("Seed", ImGuiDataType_U64, &seed);
+                if (ImGui::Button("Create grid", {-1, 0})) {
+                    Config c = edit;
+                    c.width = c.height = 1 << grid_power;
+                    c.depth = is_volume ? c.width : 1;
+                    c.radius = std::min(c.radius, c.width / 2);
+                    runner.reset(c, seed);
+                    dirty_config = false;
+                }
+            }
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextDisabled("APPEARANCE");
+            if (is_volume)
+                ImGui::Combo("View", &view.view, "Slice\0Transparent volume\0Isosurface\0");
+            const auto &palettes = Renderer::palette_names();
+            if (ImGui::BeginCombo("Palette", palettes.at(view.palette).c_str())) {
+                for (size_t i = 0; i < palettes.size(); ++i)
+                    if (ImGui::Selectable(palettes[i].c_str(), view.palette == int(i)))
+                        view.palette = int(i);
+                ImGui::EndCombo();
+            }
+            if (view.view == 0) {
+                if (is_volume) {
+                    ImGui::Combo("Slice axis", &view.axis, "X\0Y\0Z\0");
+                    ImGui::SliderFloat("Position", &view.slice, 0, 1, "%.3f");
+                }
+                ImGui::SliderFloat("Zoom", &view.zoom, .25f, 4, "%.2f");
+            } else {
+                if (view.view == 1)
+                    ImGui::SliderFloat("Opacity", &view.opacity, .1f, 10, "%.2f");
+                ImGui::SliderFloat(view.view == 2 ? "Surface value" : "Opacity floor", &view.threshold, 0, 1,
+                                   "%.3f");
+                ImGui::SliderFloat("Cutaway Z", &view.clip, 0, 1, "%.2f");
+                ImGui::SliderFloat("Sample spacing", &view.quality, .3f, 2, "%.2f");
+                if (ImGui::Button("Reset camera", {-1, 0})) {
+                    view.yaw = .65f;
+                    view.pitch = .3f;
+                    view.distance = 1.9f;
+                }
+            }
+            if (ImGui::CollapsingHeader("Periodic view origin"))
+                ImGui::SliderFloat3("Offset", view.offset, 0, 1, "%.2f");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextDisabled("EXPERIMENT");
+            if (ImGui::CollapsingHeader("Measurements")) {
+                if (!history.empty())
+                    ImGui::PlotLines("##mean", history.data(), int(history.size()), 0, "Mean activity", 0,
+                                     FLT_MAX, {ImGui::GetContentRegionAvail().x, 80 * dpi});
+                if (frame) {
+                    ImGui::TextWrapped("%s", frame->state.backend.c_str());
+                    if (!frame->gpu)
+                        ImGui::Text("FFT %.2f / %.2f ms\nUpdate %.2f ms", frame->timings.forward_ms,
+                                    frame->timings.inverse_ms, frame->timings.update_ms);
+                }
+            }
+            if (ImGui::Button("Save state", {-1, 0})) {
+                auto path = choose_file(window, true);
+                if (!path.empty())
+                    runner.save(path);
+            }
+            if (ImGui::Button("Load state", {-1, 0})) {
+                auto path = choose_file(window, false);
+                if (!path.empty()) {
+                    runner.load(path);
+                    dirty_config = false;
+                }
+            }
+            if (ImGui::Button("Export view", {-1, 0})) {
+                auto path = choose_file(window, true, true);
+                if (!path.empty()) {
+                    renderer.export_bmp(path);
+                    local_message = "Exported " + path;
+                }
+            }
+        } catch (const std::exception &e) {
+            local_message = e.what();
+        }
+        ImGui::PopItemWidth();
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("Scene", {0, available_height}, ImGuiChildFlags_Borders);
+        if (frame) {
+            ImGui::Text("%s   %d x %d x %d", is_volume ? "3D LENIA" : "2D LENIA", frame->state.config.width,
+                        frame->state.config.height, frame->state.config.depth);
+            ImGui::SameLine();
+            ImGui::TextDisabled("  t = %.3f   step %llu", frame->state.time,
+                                static_cast<unsigned long long>(frame->state.steps));
+        } else
+            ImGui::Text("Preparing simulation...");
+        ImVec2 image_size = ImGui::GetContentRegionAvail();
+        image_size.y = std::max(1.f, image_size.y - 98 * dpi);
+        image_size.x = std::max(1.f, image_size.x);
+        auto image = renderer.draw(view, int(image_size.x), int(image_size.y));
+        ImVec2 image_origin = ImGui::GetCursorScreenPos();
+        ImGui::Image((ImTextureID)(intptr_t)image, image_size);
+        if (frame && is_volume && view.view != 0)
+            draw_box(view, frame->state.config, image_origin, image_size);
+        if (ImGui::IsItemHovered()) {
+            if (is_volume && view.view != 0) {
+                if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                    view.yaw += io.MouseDelta.x * .008f;
+                    view.pitch = std::clamp(view.pitch + io.MouseDelta.y * .008f, -1.5f, 1.5f);
+                }
+                view.distance = std::clamp(view.distance * std::exp(-io.MouseWheel * .12f), .7f, 5.f);
+            } else
+                view.zoom = std::clamp(view.zoom * std::exp(io.MouseWheel * .12f), .25f, 4.f);
+        }
+        if (frame) {
+            ImGui::Text("%.1f steps/s    %.2f ms compute    %.0f display fps", frame->steps_per_second,
+                        frame->timings.total_ms, io.Framerate);
+            ImGui::TextDisabled("Mean %.5f    range [%.4f, %.4f]    %s", frame->measures.mean,
+                                frame->measures.minimum, frame->measures.maximum,
+                                frame->gpu ? "GPU float" : "CPU double");
+        }
+        ImGui::TextDisabled(is_volume && view.view != 0
+                                ? "Drag to orbit  |  Wheel to zoom  |  Space to play/pause"
+                                : "Wheel to zoom  |  Space to play/pause");
+        ImGui::EndChild();
+        if (local_message != previous_local_message) {
+            previous_local_message = local_message;
+            local_message_until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        }
+        if (std::chrono::steady_clock::now() > local_message_until)
+            local_message.clear();
+        ImGui::TextDisabled("%s", local_message.empty() ? runner.message().c_str() : local_message.c_str());
+        ImGui::End();
+        ImGui::Render();
+        ID3D11RenderTargetView *rtv = screen.Get();
+        context->OMSetRenderTargets(1, &rtv, nullptr);
+        const float clear[] = {.04f, .05f, .07f, 1};
+        context->ClearRenderTargetView(screen.Get(), clear);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        if (smoke && frame && ++smoke_frames == 5) {
+            save_backbuffer(device.Get(), context.Get(), swap.Get(), "ui-smoke.bmp");
+            renderer.export_bmp("volume-smoke.bmp");
+            smoke_exported = true;
+            done = true;
+        }
+        HRESULT present = swap->Present(1, 0);
+        check(present, "Present frame");
+        if (present == DXGI_STATUS_OCCLUDED)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!frame || !frame->running)
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
+    }
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    DestroyWindow(window);
+    UnregisterClassW(wc.lpszClassName, instance);
+    return smoke && !smoke_exported ? 1 : 0;
+}
+} // namespace
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command, int show) {
+    try {
+        return run(instance, show, std::wcsstr(command, L"--smoke") != nullptr);
+    } catch (const std::exception &e) {
+        std::ofstream("leniascope-error.log") << e.what();
+        if (!std::wcsstr(command, L"--smoke"))
+            MessageBoxA(nullptr, e.what(), "Leniascope", MB_ICONERROR);
+        return 1;
+    }
+}

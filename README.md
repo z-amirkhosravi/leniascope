@@ -54,6 +54,15 @@ On Linux, CMake builds the portable simulation core and CPU tests only; install 
 - **Transparent volume** supports mouse orbit, wheel zoom, opacity, an opacity floor, a Z cutaway, sampling quality, and a periodic view-origin offset. Opacity compensates for sample distance. **Slice** supports all three axes; **Isosurface** shows an opaque threshold surface. Display choices never modify the scalar state.
 - All 20 original palettes remain available, alongside Ocean / gold. A 4,096-entry GPU palette texture replaces per-pixel CPU segment searches. Interpolation is a display approximation, especially near discontinuities.
 - **Save state** writes a full 2D or 3D checkpoint. **Load state** pauses on the loaded state. **Export view** writes the rendered viewport as a BMP. The inspector scrolls on smaller windows; measurements include an activity plot and separate compute/display timings.
+- Camera, palettes, slice/volume settings, playback rate, compute backend, selected mode, and window size/maximization are remembered between launches. The activity plot starts afresh when a session is reset or loaded.
+
+## Workspace recovery
+
+The **Workspace** section controls automatic recovery. By default, both initialized simulation sessions are saved every 30 seconds and when the window closes. Reopening restores their actual fields, parameters, seeds, counters, and simulation times **paused**. **Save workspace now** requests an immediate recovery checkpoint; **Save state** still creates a separate experiment file at the path you choose. Turning recovery off preserves display preferences but starts fresh fields on the next launch.
+
+Files live in `%LOCALAPPDATA%\Leniascope\Laboratory`, independently of the repository and current working directory. Use `Leniascope.exe --workspace <directory>` for an isolated workspace. An exclusive file lock prevents two windows from overwriting the same workspace; additional windows can read it, but their automatic saving is disabled. Manual experiment saves remain available.
+
+Recovery writes run on a separate thread using immutable snapshots. Two alternating slots retain a previous complete recovery. Each slot is committed only after both available fields are written; checksums detect accidental field corruption. If the latest slot is incomplete or damaged, loading tries the previous complete slot. Close waits for accepted simulation commands and the final background save. If that save fails, the application offers retry, keeping the paused window open, or closing without a new recovery. These are application-crash/interrupted-write safeguards, not a guarantee against storage hardware failure or loss of unsaved work between checkpoints.
 
 ## Architecture and numerical behavior
 
@@ -64,6 +73,8 @@ On Linux, CMake builds the portable simulation core and CPU tests only; install 
 `src/runner.*` owns mutable simulation states and solver resources on one worker. UI commands are bounded and processed between steps. Every completed step publishes an immutable state, with only the latest frame retained by the runner; a slower display can skip intermediate images without dropping numerical steps. A [high-resolution Windows waitable timer](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw) paces the worker against steady-clock deadlines, with a separate event for immediate command/shutdown wakeups and an ordinary timer fallback on older Windows. This avoids both the former 30 Hz publication cap and accumulated sleep drift. The UI/renderer use their own graphics device. Current GPU snapshots read back through CPU memory and are uploaded to the renderer; direct GPU resource sharing is a future optimization, not part of the measured compute time.
 
 `src/renderer.*` reuses the volume, palette, render-target, and graphics resources. The application shell in `src/application.cpp` handles window events and controls. The numerical core can run through the CLI without opening a window.
+
+`src/workspace.*` contains portable preference serialization, recovery validation, and the background writer; `src/desktop_workspace.*` resolves the Windows location and owns its file lock. `src/view_settings.h` has no graphics dependency. Worker commands execute in order; a failed command pauses evolution and reports the error while allowing later accepted commands to run. Manual steps execute before following mode/save commands. Paused worker updates wake the UI without waiting for its idle timeout.
 
 Classic Lenia remains `a_next = clamp(a + dt * (2*exp(-0.5*((K*a-mu)/sigma)^2)-1), 0, 1)`. The radial kernel uses a fixed Gaussian centered at normalized radius 0.5 with width 0.15, then is normalized to unit sum. `mu` and `sigma` control the growth function, not that radial Gaussian. Random patch placement now scales with the radius and wraps safely; it intentionally does not reproduce the old clock-seeded `rand()` initialization.
 
@@ -83,11 +94,16 @@ Float32 GPU trajectories can diverge from float64 CPU trajectories over many ste
 
 # Best integer spatial translation and recurrence RMS error
 .\x64\Modern\Release\LeniascopeCli.exe compare first.lenia second.lenia
+
+# Evolve one saved field over the same duration at dt, dt/2, dt/4, and dt/8
+.\x64\Modern\Release\LeniascopeCli.exe converge first.lenia --steps 20 --levels 4 > convergence.csv
 ```
 
 Sweep filenames receive `.run-N` suffixes. A seed identifies the initialization algorithm and its input; checkpoints contain the actual field. Version 2 stores dimensions, parameters, rule, smoothing sharpness, seed, step count, simulation time, solver identifier, and double-valued state. GPU values are promoted from float32 when saved, without adding precision. Writes use a temporary sibling and rename after a successful close. The binary format assumes little-endian IEEE-754, as on the supported Windows/x86-64 and tested Linux/x86-64 systems. Valid legacy 2D `Leniav1` files can be imported; ambiguous legacy 3D payloads are rejected.
 
 `compare` computes periodic cross-correlation with FFTW, then verifies the best integer translation using an RMS residual. Its convention is `second(x + d)` compared with `first(x)`. It reports the time difference, translation, and residual; this is a candidate-recurrence diagnostic, not a proof of a relative periodic orbit. Constant or symmetric fields can have non-unique best translations. Subcell shifts, continuation, stability analysis, and certified orbit finding remain research work.
+
+`converge` uses CPU double for every run, starting from the exact same checkpoint without modifying it. The simulated duration is the saved timestep times `--steps`; finer runs take correspondingly more steps. CSV rows report timestep, step count, duration, mean activity, and pointwise RMS/maximum differences from the finest run. The finest row therefore has zero residual **by definition**, not zero numerical error. Repeat with finer levels and appropriate durations, particularly for clipping events or sensitive patterns. GPU checkpoints are usable starting fields, but their stored float32 values do not gain precision by promotion to double. This command refines time only; spatial refinement needs a consistently sampled physical field and scaled kernel radius.
 
 The explicitly experimental **Smooth reaction** rule implements the C-infinity bounded reaction law
 
@@ -103,6 +119,10 @@ It uses exponential Euler with the neighborhood frozen during each step, preserv
 ## Verification and performance
 
 `CoreTests` checks independent direct convolution on square, rectangular, and non-cubic grids; seeded repeatability; kernel normalization; 3D checkpoint round trips/replacement; invalid input; torus shift recovery; smooth-rule bounds and small-step consistency; CPU/GPU agreement; and worker lifecycle/state ownership. The baseline target additionally verifies five-step agreement with the original solver on square and cubic grids. `--cpu-only` skips hardware-dependent tests. `tests/RenderTests.vcxproj` checks slices, volumes, surfaces, cutaways, sampling-opacity consistency, rectangular resizing, and every palette. `Leniascope.exe --smoke` saves the application's own rendered interface and viewport in its working directory and exits; `tools/convert-preview.py` converts these BMPs to PNG without external packages.
+
+The extended tests cover corrupt/interrupted recovery, write failures, preference validation, two-window locking on Windows, command ordering after failures, both restored sessions, and the animation publication cadence. Numerical checks refine time and 16/32/64-cell spatial grids for the same smooth periodic field with a fixed physical kernel radius, in both dimensions and both rules. They also run 500-step boundedness checks and report CPU/GPU drift. On one local seeded 2D classic case, RMS drift rose from about `1.7e-6` at step 100 to `3.8e-4` at step 500; this illustrates why short-step agreement does not imply identical long trajectories.
+
+`tools/test_cli.py <CLI executable>` checks command-line experiments and timestep studies end to end and runs in Windows CI. `tools/test_workspace.py <GUI executable> <CLI executable>` opens and closes the actual GUI twice with an isolated temporary workspace, verifying both paused fields and view settings survive exactly. It requires a local graphics adapter. Ordinary `--smoke` does not access personal workspace files; adding `--workspace <directory>` exercises persistence and the normal close path in that directory.
 
 Run `tools/benchmark.ps1` for matched seeded CPU/GPU measurements. Initial 30-step Release measurements on a Core Ultra 9 285K / RTX 5070 Ti, with a snapshot and CSV sample every 10 steps:
 

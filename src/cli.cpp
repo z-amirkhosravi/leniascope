@@ -1,4 +1,5 @@
 #include "gpu_solver.h"
+#include "numerics.h"
 #include "simulation.h"
 #include <algorithm>
 #include <chrono>
@@ -13,18 +14,46 @@ using namespace lenia;
 int main(int argc, char **argv) {
     try {
         if (argc < 2 || std::string(argv[1]) == "--help") {
-            std::cout << "Leniascope laboratory CLI / model schema 2\n"
-                         "run [--dimensions 2|3] [--size 128] [--radius 26] [--seed 1]\n"
-                         "    [--steps 100] [--dt 0.1] [--mu 0.15] [--sigma 0.017]\n"
-                         "    [--backend cpu|gpu] [--rule classic|smooth] [--sharpness 12]\n"
-                         "    [--input checkpoint.lenia] [--output checkpoint.lenia]\n"
-                         "    [--csv metrics.csv] [--sample-every 10] [--checkpoint-every 0]\n"
-                         "    [--sweep-mu 0.13,0.14,0.15]\n"
-                         "compare first.lenia second.lenia  (best integer torus translation)\n"
-                         "GPU uses float32; CPU uses float64. Sweep outputs append .run-N.\n";
+            std::cout
+                << "Leniascope laboratory CLI / model schema 2\n"
+                   "run [--dimensions 2|3] [--size 128] [--radius 26] [--seed 1]\n"
+                   "    [--steps 100] [--dt 0.1] [--mu 0.15] [--sigma 0.017]\n"
+                   "    [--backend cpu|gpu] [--rule classic|smooth] [--sharpness 12]\n"
+                   "    [--input checkpoint.lenia] [--output checkpoint.lenia]\n"
+                   "    [--csv metrics.csv] [--sample-every 10] [--checkpoint-every 0]\n"
+                   "    [--sweep-mu 0.13,0.14,0.15]\n"
+                   "compare first.lenia second.lenia  (best integer torus translation)\n"
+                   "converge checkpoint.lenia [--steps 20] [--levels 4]  (CPU timestep study, CSV stdout)\n"
+                   "GPU uses float32; CPU uses float64. Sweep outputs append .run-N.\n";
             return 0;
         }
         std::string command = argv[1];
+        if (command == "converge") {
+            if (argc < 3)
+                throw std::invalid_argument("converge needs a checkpoint path");
+            int steps = 20, levels = 4;
+            std::map<std::string, bool> seen;
+            for (int i = 3; i < argc; i += 2) {
+                std::string name = argv[i];
+                if (i + 1 >= argc || (name != "--steps" && name != "--levels") || seen[name])
+                    throw std::invalid_argument("Unknown, duplicate, or incomplete convergence option");
+                seen[name] = true;
+                std::string text = argv[i + 1];
+                size_t end;
+                int value = std::stoi(text, &end);
+                if (end != text.size())
+                    throw std::invalid_argument("Invalid convergence integer");
+                (name == "--steps" ? steps : levels) = value;
+            }
+            auto initial = load_state(argv[2]);
+            auto report = timestep_study(initial, steps, levels);
+            std::cout << std::setprecision(17) << "dt,steps,duration,rms_to_finest,max_to_finest,mean\n";
+            for (const auto &sample : report)
+                std::cout << sample.dt << ',' << sample.steps << ',' << sample.duration << ','
+                          << sample.rms_to_finest << ',' << sample.max_to_finest << ',' << sample.mean
+                          << '\n';
+            return 0;
+        }
         if (command == "compare") {
             if (argc != 4)
                 throw std::invalid_argument("compare needs two checkpoint paths");

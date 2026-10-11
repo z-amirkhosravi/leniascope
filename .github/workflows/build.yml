@@ -8,6 +8,7 @@ jobs:
       - run: cmake -S . -B out -A x64
       - run: cmake --build out --config Release --parallel
       - run: ctest --test-dir out -C Release --output-on-failure
+      - run: python tools/test_cli.py out/Release/LeniascopeCli.exe
   linux-core:
     runs-on: ubuntu-latest
     steps:

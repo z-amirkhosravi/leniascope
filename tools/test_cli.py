@@ -1,6 +1,7 @@
 """Exercise CLI checkpoints, malformed files, sweeps, and recurrence end to end."""
 from pathlib import Path
 import csv
+import io
 import struct
 import subprocess
 import sys
@@ -54,4 +55,12 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
         assert [int(row['step']) for row in rows] == [0, 2, 4]
     run('run', '--unknown', 10, succeeds=False)
     run('run', '--steps', -1, succeeds=False)
-    print('PASS CLI malformed checkpoints, resume equivalence, recurrence, sweep CSV, invalid options')
+    report = list(csv.DictReader(io.StringIO(run('converge', arg_path(state), '--steps', 4, '--levels', 3))))
+    assert [int(row['steps']) for row in report] == [4, 8, 16]
+    assert [float(row['dt']) for row in report] == [.1, .05, .025]
+    assert all(float(row['duration']) == .4 for row in report)
+    assert float(report[-1]['rms_to_finest']) == 0
+    assert state.read_bytes() == data  # The study never changes the source experiment.
+    for args in [('--levels', 1), ('--steps', 0), ('--steps', '3x'), ('--unknown', 3)]:
+        run('converge', arg_path(state), *args, succeeds=False)
+    print('PASS CLI malformed checkpoints, resume equivalence, recurrence, sweep CSV, timestep study, invalid options')

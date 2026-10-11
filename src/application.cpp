@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "backends/imgui_impl_dx11.h"
 #include "backends/imgui_impl_win32.h"
+#include "desktop_workspace.h"
 #include "imgui.h"
 #include "renderer.h"
 #include "runner.h"
@@ -17,11 +18,17 @@ namespace {
 using namespace lenia;
 UINT pending_width = 0, pending_height = 0;
 bool minimized = false;
+bool close_requested = false;
 float requested_dpi = 0;
 LRESULT WINAPI window_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (ImGui_ImplWin32_WndProcHandler(h, m, w, l))
         return 1;
     switch (m) {
+    case WM_CLOSE:
+        close_requested = true;
+        return 0;
+    case WM_APP + 1:
+        return 0; // A completed worker state also wakes the paused UI.
     case WM_SIZE:
         minimized = w == SIZE_MINIMIZED;
         if (!minimized) {
@@ -155,7 +162,27 @@ void draw_box(const ViewSettings &v, const Config &c, ImVec2 origin, ImVec2 size
                 draw->AddLine(points[i], points[i | axis], IM_COL32(100, 150, 164, 95));
     draw->PopClipRect();
 }
-int run(HINSTANCE instance, int show, bool smoke) {
+int run(HINSTANCE instance, int show, const StartupOptions &options) {
+    const bool smoke = options.smoke;
+    std::unique_ptr<WorkspaceAccess> access;
+    std::unique_ptr<WorkspaceWriter> writer;
+    RestoredWorkspace restored;
+    if (!smoke || !options.workspace.empty()) {
+        try {
+            access = std::make_unique<WorkspaceAccess>(options.workspace);
+            restored = restore_workspace(access->directory);
+            if (access->writable())
+                writer = std::make_unique<WorkspaceWriter>(access->directory);
+            else
+                restored.message += " " + access->message;
+        } catch (const std::exception &e) {
+            restored.message = std::string("Workspace unavailable: ") + e.what();
+        }
+    }
+    auto preferences = restored.preferences;
+    for (auto &view : preferences.views)
+        if (size_t(view.palette) >= Renderer::palette_names().size())
+            view.palette = 0;
     ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc{sizeof wc,
                    CS_CLASSDC,
@@ -211,30 +238,76 @@ int run(HINSTANCE instance, int show, bool smoke) {
     style(dpi);
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    int ww = std::min(int(1440 * dpi), int((work.right - work.left) * .94)),
-        wh = std::min(int(940 * dpi), int((work.bottom - work.top) * .94));
+    int ww = std::min(int(preferences.window_width * dpi), int((work.right - work.left) * .94)),
+        wh = std::min(int(preferences.window_height * dpi), int((work.bottom - work.top) * .94));
     SetWindowPos(window, nullptr, work.left + (work.right - work.left - ww) / 2,
                  work.top + (work.bottom - work.top - wh) / 2, ww, wh, SWP_NOZORDER);
     io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17 * dpi);
     ImGui_ImplWin32_Init(window);
     ImGui_ImplDX11_Init(device.Get(), context.Get());
     Renderer renderer(device.Get(), context.Get());
-    Runner runner;
-    ViewSettings views[2];
-    views[0].view = 0;
+    Runner runner(preferences.gpu, std::move(restored.states), preferences.volume,
+                  [window] { PostMessageW(window, WM_APP + 1, 0, 0); });
+    runner.speed(preferences.steps_per_second);
+    auto &views = preferences.views;
     bool done = false, dirty_config = false;
     Config edit;
     uint64_t shown = 0, seed = 1, shown_generation = UINT64_MAX;
     int grid_power = 7;
-    float rate = 60;
-    std::string local_message, previous_local_message;
+    float rate = float(preferences.steps_per_second);
+    std::string local_message = restored.message, previous_local_message;
     auto local_message_until = std::chrono::steady_clock::now();
     int smoke_frames = 0;
     bool smoke_exported = false;
     std::vector<float> history;
     uint64_t history_step = UINT64_MAX;
     bool history_volume = true;
-    ShowWindow(window, show);
+    auto next_recovery = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    auto next_preferences = std::chrono::steady_clock::now();
+    std::string sent_preferences;
+    uint64_t acknowledged_checkpoints = 0;
+    int closing_stage = 0;
+    std::future<SessionSnapshot> closing_snapshot;
+    std::optional<SessionSnapshot> closing_sessions;
+    std::string closing_error;
+    auto persist_workspace = [&](const std::shared_ptr<const Frame> &frame) {
+        if (!close_requested) {
+            preferences.steps_per_second = rate;
+            if (frame) {
+                preferences.gpu = frame->gpu;
+                preferences.volume = frame->state.config.depth > 1;
+            }
+            WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};
+            if (GetWindowPlacement(window, &placement) && placement.showCmd != SW_SHOWMINIMIZED) {
+                preferences.window_width = std::clamp(
+                    int((placement.rcNormalPosition.right - placement.rcNormalPosition.left) / dpi), 320,
+                    16384);
+                preferences.window_height = std::clamp(
+                    int((placement.rcNormalPosition.bottom - placement.rcNormalPosition.top) / dpi), 240,
+                    16384);
+                preferences.maximized = placement.showCmd == SW_SHOWMAXIMIZED;
+            }
+            if (writer && frame) {
+                try {
+                    auto now = std::chrono::steady_clock::now();
+                    auto encoded = encode_preferences(preferences);
+                    bool recover = preferences.recovery && now >= next_recovery;
+                    if (recover || (encoded != sent_preferences && now >= next_preferences)) {
+                        writer->request(preferences,
+                                        recover ? std::optional<SessionSnapshot>(runner.session_snapshot())
+                                                : std::nullopt);
+                        sent_preferences = std::move(encoded);
+                        next_preferences = now + std::chrono::seconds(2);
+                        if (recover)
+                            next_recovery = now + std::chrono::seconds(30);
+                    }
+                } catch (const std::exception &e) {
+                    local_message = e.what();
+                }
+            }
+        }
+    };
+    ShowWindow(window, preferences.maximized ? SW_SHOWMAXIMIZED : show);
     UpdateWindow(window);
     while (!done) {
         MSG msg;
@@ -246,7 +319,9 @@ int run(HINSTANCE instance, int show, bool smoke) {
         }
         if (done)
             break;
-        if (minimized) {
+        auto frame = runner.frame();
+        persist_workspace(frame);
+        if (minimized && !close_requested) {
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
             continue;
         }
@@ -266,11 +341,44 @@ int run(HINSTANCE instance, int show, bool smoke) {
             io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17 * dpi);
             requested_dpi = 0;
         }
-        auto frame = runner.frame();
+        if (close_requested && closing_stage == 0) {
+            try {
+                closing_snapshot = runner.pause_and_snapshot();
+                closing_stage = 1;
+            } catch (const std::exception &e) {
+                closing_error = e.what();
+                closing_stage = 3;
+            }
+        }
+        if (closing_stage == 1 &&
+            closing_snapshot.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            try {
+                closing_sessions = closing_snapshot.get();
+                preferences.volume = closing_sessions->volume;
+                preferences.steps_per_second = rate;
+                if (auto final_frame = runner.frame())
+                    preferences.gpu = final_frame->gpu;
+                if (writer)
+                    writer->request(preferences, preferences.recovery ? closing_sessions : std::nullopt);
+                closing_stage = 2;
+            } catch (const std::exception &e) {
+                closing_error = e.what();
+                closing_stage = 3;
+            }
+        }
+        if (closing_stage == 2 && (!writer || !writer->status().busy)) {
+            closing_error = writer ? writer->status().error : std::string();
+            if (closing_error.empty())
+                break;
+            closing_stage = 3;
+        }
+        if (smoke && closing_stage == 3)
+            throw std::runtime_error(closing_error);
         bool is_volume = frame ? frame->state.config.depth > 1 : true;
         auto &view = views[is_volume];
         if (frame && frame->serial != shown) {
-            if (history_volume != is_volume || frame->state.steps < history_step)
+            if (history_volume != is_volume || frame->state.steps < history_step ||
+                shown_generation != frame->generation)
                 history.clear();
             if (history.empty() || frame->state.steps != history_step) {
                 history.push_back(float(frame->measures.mean));
@@ -304,9 +412,10 @@ int run(HINSTANCE instance, int show, bool smoke) {
         ImGui::SameLine();
         ImGui::TextDisabled(" /  laboratory");
         ImGui::SameLine(300 * dpi);
+        ImGui::BeginDisabled(close_requested || !frame);
         try {
             if (ImGui::Button(frame && frame->running ? "Pause" : "Play", {88 * dpi, 0}) ||
-                (ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
+                (frame && !close_requested && ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
                 runner.play(!(frame && frame->running));
             ImGui::SameLine();
             if (ImGui::Button("Step"))
@@ -462,6 +571,25 @@ int run(HINSTANCE instance, int show, bool smoke) {
                     local_message = "Exported " + path;
                 }
             }
+            if (ImGui::CollapsingHeader("Workspace")) {
+                ImGui::BeginDisabled(!writer);
+                ImGui::Checkbox("Autosave and restore sessions", &preferences.recovery);
+                ImGui::TextWrapped(
+                    "Both fields are saved every 30 seconds and on close. Reopening starts paused.");
+                if (ImGui::Button(preferences.recovery ? "Save workspace now" : "Save preferences now",
+                                  {-1, 0}) &&
+                    writer) {
+                    auto snapshot = runner.session_snapshot();
+                    preferences.volume = snapshot.volume;
+                    writer->request(preferences, preferences.recovery
+                                                     ? std::optional<SessionSnapshot>(snapshot)
+                                                     : std::nullopt);
+                    next_recovery = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                }
+                ImGui::EndDisabled();
+                if (access && !access->writable())
+                    ImGui::TextWrapped("%s", access->message.c_str());
+            }
         } catch (const std::exception &e) {
             local_message = e.what();
         }
@@ -506,13 +634,45 @@ int run(HINSTANCE instance, int show, bool smoke) {
                                 ? "Drag to orbit  |  Wheel to zoom  |  Space to play/pause"
                                 : "Wheel to zoom  |  Space to play/pause");
         ImGui::EndChild();
+        ImGui::EndDisabled();
         if (local_message != previous_local_message) {
             previous_local_message = local_message;
             local_message_until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         }
         if (std::chrono::steady_clock::now() > local_message_until)
             local_message.clear();
-        ImGui::TextDisabled("%s", local_message.empty() ? runner.message().c_str() : local_message.c_str());
+        auto persistence_status = writer ? writer->status() : WorkspaceWriter::Status{};
+        if (persistence_status.checkpoints != acknowledged_checkpoints) {
+            acknowledged_checkpoints = persistence_status.checkpoints;
+            local_message = "Workspace saved.";
+        }
+        auto status = close_requested ? "Saving workspace before closing..."
+                      : !persistence_status.error.empty()
+                          ? "Workspace save failed: " + persistence_status.error
+                      : persistence_status.busy ? "Saving workspace..."
+                      : local_message.empty()   ? runner.message()
+                                                : local_message;
+        ImGui::TextDisabled("%s", status.c_str());
+        if (closing_stage == 3)
+            ImGui::OpenPopup("Workspace save failed");
+        if (ImGui::BeginPopupModal("Workspace save failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped("%s", closing_error.c_str());
+            ImGui::TextWrapped("Existing complete recovery checkpoints have been preserved.");
+            if (ImGui::Button("Retry")) {
+                closing_stage = 0;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Keep open")) {
+                close_requested = false;
+                closing_stage = 0;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Close without saving"))
+                done = true;
+            ImGui::EndPopup();
+        }
         ImGui::End();
         ImGui::Render();
         ID3D11RenderTargetView *rtv = screen.Get();
@@ -524,7 +684,7 @@ int run(HINSTANCE instance, int show, bool smoke) {
             save_backbuffer(device.Get(), context.Get(), swap.Get(), "ui-smoke.bmp");
             renderer.export_bmp("volume-smoke.bmp");
             smoke_exported = true;
-            done = true;
+            close_requested = true; // Exercise the ordinary pause, save, and close path too.
         }
         HRESULT present = swap->Present(1, 0);
         check(present, "Present frame");
@@ -532,6 +692,11 @@ int run(HINSTANCE instance, int show, bool smoke) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (!frame || !frame->running)
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
+    }
+    if (writer) {
+        writer->flush();
+        if (smoke && !writer->status().error.empty())
+            throw std::runtime_error(writer->status().error);
     }
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
@@ -543,7 +708,7 @@ int run(HINSTANCE instance, int show, bool smoke) {
 } // namespace
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command, int show) {
     try {
-        return run(instance, show, std::wcsstr(command, L"--smoke") != nullptr);
+        return run(instance, show, startup_options());
     } catch (const std::exception &e) {
         std::ofstream("leniascope-error.log") << e.what();
         if (!std::wcsstr(command, L"--smoke"))

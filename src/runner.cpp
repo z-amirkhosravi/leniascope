@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
@@ -50,9 +51,16 @@ struct Runner::Wake {
             throw std::system_error(error, std::system_category(), "Wait for worker deadline");
     }
 };
-Runner::Runner(bool prefer_gpu) : wake(std::make_unique<Wake>()) {
+Runner::Runner(bool prefer_gpu, SessionStates initial, bool initial_volume, std::function<void()> notify)
+    : wake(std::make_unique<Wake>()), notify_frame(std::move(notify)) {
     use_gpu = prefer_gpu;
-    worker = std::thread([this] { loop(); });
+    volume = initial_volume;
+    worker = std::thread([this, initial = std::move(initial)]() mutable {
+        loop(std::move(initial));
+        std::lock_guard<std::mutex> lock(mutex);
+        finished = true;
+        commands.clear(); // Resolve pending promises even if initialization failed.
+    });
 }
 Runner::~Runner() {
     {
@@ -77,6 +85,8 @@ void Runner::set_message(std::string s) {
 void Runner::enqueue(std::function<void()> f) {
     {
         std::lock_guard<std::mutex> lock(mutex);
+        if (stopping || finished)
+            throw std::runtime_error("Simulation worker is unavailable: " + status);
         if (commands.size() >= 64)
             throw std::runtime_error("Simulation command queue is full");
         commands.push_back(std::move(f));
@@ -89,20 +99,21 @@ std::unique_ptr<Solver> Runner::create(State s) {
     return std::make_unique<CpuSolver>(std::move(s));
 }
 void Runner::play(bool b) {
-    enqueue([this, b] {
-        running = b;
-        single_steps = 0;
-    });
+    enqueue([this, b] { running = b; });
 }
 void Runner::step() {
     enqueue([this] {
         running = false;
-        ++single_steps;
+        // Execute in command order, before a following mode switch, reset, or save.
+        sessions[volume]->step();
+        publish();
     });
 }
 void Runner::reset(Config c, uint64_t seed) {
     enqueue([this, c, seed] {
         auto next = create(random_state(c, seed));
+        if (volume != (c.depth > 1))
+            publish();
         volume = c.depth > 1;
         sessions[volume] = std::move(next);
         ++generation;
@@ -125,6 +136,7 @@ void Runner::mode(bool v) {
                 c = {1024, 1024, 1, 104};
             sessions[v] = create(random_state(c, 1));
         }
+        publish(); // Preserve preceding parameter/step commands before leaving this session.
         volume = v;
         ++generation;
         set_message("Restored independent simulation session");
@@ -146,10 +158,14 @@ void Runner::backend(bool gpu) {
         for (int i = 0; i < 2; ++i)
             sessions[i] = std::move(next[i]);
         use_gpu = gpu;
+        if (sessions[!volume])
+            publish(!volume);
         set_message(gpu ? "GPU float solver active" : "CPU double reference active");
     });
 }
 void Runner::speed(double rate) {
+    if (!std::isfinite(rate))
+        throw std::invalid_argument("Playback rate must be finite");
     enqueue([this, rate] { target_rate = std::max(1., std::min(240., rate)); });
 }
 void Runner::save(std::string path) {
@@ -163,41 +179,90 @@ void Runner::load(std::string path) {
         auto s = load_state(path);
         bool v = s.config.depth > 1;
         auto next = create(std::move(s));
+        if (volume != v)
+            publish();
         sessions[v] = std::move(next);
         volume = v;
         ++generation;
         running = false;
-        single_steps = 0;
         set_message("Loaded " + path);
     });
 }
-void Runner::publish() {
+SessionSnapshot Runner::session_snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    SessionSnapshot result;
+    for (int i = 0; i < 2; ++i)
+        if (published[i])
+            result.states[i] = std::shared_ptr<const State>(published[i], &published[i]->state);
+    if (latest)
+        result.volume = latest->state.config.depth > 1;
+    return result;
+}
+std::future<SessionSnapshot> Runner::pause_and_snapshot() {
+    auto promise = std::make_shared<std::promise<SessionSnapshot>>();
+    auto future = promise->get_future();
+    enqueue([this, promise] {
+        running = false;
+        try {
+            publish();
+            promise->set_value(session_snapshot());
+        } catch (...) {
+            promise->set_exception(std::current_exception());
+        }
+    });
+    return future;
+}
+void Runner::publish(int index) {
+    if (index < 0)
+        index = volume;
     auto f = std::make_shared<Frame>();
-    f->state = sessions[volume]->snapshot();
-    f->timings = sessions[volume]->timings();
+    f->state = sessions[index]->snapshot();
+    f->timings = sessions[index]->timings();
     f->measures = measure(f->state.values);
     f->serial = ++serial;
     f->generation = generation;
-    f->running = running;
+    f->running = running && index == int(volume);
     f->gpu = use_gpu;
     f->steps_per_second = running ? measured_rate : 0;
-    std::lock_guard<std::mutex> lock(mutex);
-    latest = std::move(f);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        published[index] = f;
+        if (index == int(volume))
+            latest = std::move(f);
+    }
+    if (index == int(volume) && notify_frame)
+        notify_frame();
 }
-void Runner::loop() {
+void Runner::loop(SessionStates initial) {
     using Clock = std::chrono::steady_clock;
     try {
-        auto initial = random_state(Config{}, 1);
+        if (!initial[volume])
+            initial[volume] =
+                std::make_shared<State>(random_state(volume ? Config{} : Config{1024, 1024, 1, 104}, 1));
+        auto initialize = [&] {
+            std::unique_ptr<Solver> next[2];
+            for (int i = 0; i < 2; ++i)
+                if (initial[i]) {
+                    if ((initial[i]->config.depth > 1) != bool(i))
+                        throw std::invalid_argument("Restored session dimension mismatch");
+                    next[i] = create(*initial[i]);
+                }
+            for (int i = 0; i < 2; ++i)
+                sessions[i] = std::move(next[i]);
+        };
         std::string message = "Ready. Press Play or Space.";
         try {
-            sessions[1] = create(initial);
+            initialize();
         } catch (const std::exception &e) {
             if (!use_gpu)
                 throw;
             use_gpu = false;
-            sessions[1] = create(std::move(initial));
+            initialize();
             message = std::string("GPU unavailable; using CPU: ") + e.what();
         }
+        initial = {};
+        if (sessions[!volume])
+            publish(!volume);
         publish();
         set_message(message);
     } catch (const std::exception &e) {
@@ -208,16 +273,17 @@ void Runner::loop() {
     uint64_t interval_steps = 0;
     for (;;) {
         std::deque<std::function<void()>> work;
+        bool finish = false;
         try {
             std::unique_lock<std::mutex> lock(mutex);
-            while (!stopping && commands.empty() && (!(running || single_steps) || Clock::now() < deadline))
-                wake->wait(lock, running || single_steps, deadline);
-            if (stopping)
+            while (!stopping && commands.empty() && (!running || Clock::now() < deadline))
+                wake->wait(lock, running, deadline);
+            if (stopping && commands.empty())
                 break;
+            finish = stopping;
             work.swap(commands);
         } catch (const std::exception &e) {
             running = false;
-            single_steps = 0;
             set_message(e.what());
             try {
                 publish();
@@ -226,26 +292,38 @@ void Runner::loop() {
             return;
         }
         try {
-            bool was_active = running || single_steps;
+            bool was_active = running;
             double previous_rate = target_rate;
-            for (auto &f : work)
-                f();
+            std::string command_error;
+            for (auto &f : work) {
+                try {
+                    f();
+                } catch (const std::exception &e) {
+                    running = false;
+                    command_error = e.what();
+                }
+            }
+            if (!command_error.empty())
+                set_message(command_error);
+            if (finish)
+                running = false;
             auto now = Clock::now();
             auto period =
                 std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1. / target_rate));
             // Resume and speed changes must not inherit an old (possibly far away) deadline.
-            if ((running || single_steps) && !was_active)
+            if (running && !was_active) {
                 deadline = now;
-            else if (target_rate != previous_rate)
+                rate_start = now;
+                interval_steps = 0;
+                measured_rate = 0;
+            } else if (target_rate != previous_rate)
                 deadline = last_step_start + period;
             bool advanced = false;
-            if ((running || single_steps) && now >= deadline) {
+            if (running && now >= deadline) {
                 last_step_start = now;
                 sessions[volume]->step();
                 ++interval_steps;
                 advanced = true;
-                if (single_steps)
-                    --single_steps;
                 // Anchor pacing to the schedule, rather than accumulating the wait's overshoot.
                 // If computation falls behind, continue at capacity without a catch-up backlog.
                 deadline = std::max(Clock::now(), deadline + period);
@@ -263,13 +341,14 @@ void Runner::loop() {
                 publish();
         } catch (const std::exception &e) {
             running = false;
-            single_steps = 0;
             set_message(e.what());
             try {
                 publish();
             } catch (...) {
             }
         }
+        if (finish)
+            break;
     }
 }
 } // namespace lenia

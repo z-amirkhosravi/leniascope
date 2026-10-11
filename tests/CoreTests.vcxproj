@@ -35,6 +35,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="core_tests.cpp" />
+    <ClCompile Include="workspace_tests.cpp" />
+    <ClCompile Include="..\src\workspace.cpp" />
+    <ClCompile Include="..\src\desktop_workspace.cpp" />
     <ClCompile Include="..\src\simulation.cpp" />
     <ClCompile Include="..\src\gpu_solver.cpp" />
     <ClCompile Include="..\src\runner.cpp" />

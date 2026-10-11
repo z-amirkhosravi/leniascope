@@ -46,6 +46,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\application.cpp" />
+    <ClCompile Include="src\desktop_workspace.cpp" />
+    <ClCompile Include="src\workspace.cpp" />
     <ClCompile Include="src\simulation.cpp" />
     <ClCompile Include="src\gpu_solver.cpp" />
     <ClCompile Include="src\runner.cpp" />

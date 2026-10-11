@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <thread>
 using namespace lenia;
+void workspace_tests();
 void require(bool b, const char *message) {
     if (!b)
         throw std::runtime_error(message);
@@ -63,6 +64,7 @@ void compare_convolution(Config c) {
 int main(int argc, char **argv) {
     try {
         bool cpu_only = argc > 1 && std::string(argv[1]) == "--cpu-only";
+        workspace_tests();
         compare_convolution({8, 8, 1, 2});
         compare_convolution({16, 8, 1, 2});
         compare_convolution({8, 4, 16, 2});
@@ -250,8 +252,35 @@ int main(int argc, char **argv) {
         }
         require(std::chrono::steady_clock::now() - shutdown_start < std::chrono::milliseconds(750),
                 "Shutdown waited for the pending one-second deadline");
+        {
+            // Queue the whole batch during startup: a failure must not discard later actions,
+            // and Step must apply to the session selected at that point in the command sequence.
+            Runner runner(false);
+            runner.load("missing-reliability-test-checkpoint.lenia");
+            Config cfg{16, 16, 1, 3};
+            runner.reset(cfg, 987);
+            runner.speed(1);
+            runner.step();
+            cfg.mu = .21;
+            runner.parameters(cfg);
+            runner.mode(true);
+            auto future = runner.pause_and_snapshot();
+            require(future.wait_for(std::chrono::seconds(15)) == std::future_status::ready,
+                    "Failed command discarded following commands/barrier");
+            auto states = future.get();
+            require(states.volume && states.states[0] && states.states[1] && states.states[0]->seed == 987 &&
+                        states.states[0]->steps == 1 && states.states[0]->config.mu == .21 &&
+                        states.states[1]->steps == 0,
+                    "Command order or inactive session snapshot was lost");
+            Runner resumed(false, states.states, false);
+            auto restored = resumed.pause_and_snapshot().get();
+            require(!restored.volume && restored.states[0]->values == states.states[0]->values &&
+                        restored.states[1]->values == states.states[1]->values,
+                    "Restored runner changed a paused session");
+        }
         std::cout << "PASS worker pause, step, immutable snapshots, publication cadence, speed changes, "
-                     "mode preservation, backend transition, interruptible shutdown\n";
+                     "mode preservation, backend transition, command failures/order, restored sessions, "
+                     "interruptible shutdown\n";
 #endif
         return 0;
     } catch (const std::exception &e) {

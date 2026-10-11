@@ -167,6 +167,7 @@ int main(int argc, char **argv) {
                     error = std::max(error, std::abs(expected.values[i] - actual.values[i]));
                 require(error < 3e-5, "GPU smooth reaction differs from CPU");
             }
+        auto shutdown_start = std::chrono::steady_clock::now();
         {
             Runner runner(false);
             auto await_frame = [&](std::function<bool(const Frame &)> predicate) {
@@ -198,6 +199,39 @@ int main(int argc, char **argv) {
             auto paused = await_frame([](const Frame &f) { return !f.running && f.state.steps > 1; });
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
             require(runner.frame()->state.steps == paused->state.steps, "Paused worker advanced");
+            // Count publications by serial, so this check does not depend on how often the test
+            // thread is scheduled. Every completed step must be available to the display even
+            // when no controls are being touched (dragging a slider used to bypass a 30 Hz cap).
+            for (double rate : {60., 120.}) {
+                runner.speed(rate);
+                runner.play(true);
+                auto start = await_frame(
+                    [&](const Frame &f) { return f.running && f.state.steps > paused->state.steps; });
+                auto begin = std::chrono::steady_clock::now();
+                auto finish =
+                    await_frame([&](const Frame &f) { return f.state.steps >= start->state.steps + 48; });
+                double seconds =
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+                auto steps = finish->state.steps - start->state.steps;
+                auto frames = finish->serial - start->serial;
+                runner.play(false);
+                paused = await_frame([](const Frame &f) { return !f.running; });
+                std::cout << "Worker target=" << rate << " steps/s: " << steps / seconds << " steps/s, "
+                          << frames / seconds << " snapshots/s (" << frames << " snapshots / " << steps
+                          << " steps)\n";
+                require(frames == steps, "Running steps were hidden from the display between UI commands");
+            }
+            runner.speed(1);
+            runner.play(true);
+            auto slow =
+                await_frame([&](const Frame &f) { return f.running && f.state.steps > paused->state.steps; });
+            auto command_start = std::chrono::steady_clock::now();
+            runner.speed(120);
+            await_frame([&](const Frame &f) { return f.state.steps >= slow->state.steps + 4; });
+            require(std::chrono::steady_clock::now() - command_start < std::chrono::milliseconds(750),
+                    "Speed change waited for the previous one-second deadline");
+            runner.play(false);
+            await_frame([](const Frame &f) { return !f.running; });
             if (!cpu_only) {
                 runner.backend(true);
                 await_frame([](const Frame &f) { return f.gpu; });
@@ -207,9 +241,17 @@ int main(int argc, char **argv) {
                 require(restored2->state.seed == 456 && restored2->state.steps == 0,
                         "Backend switch lost inactive mode");
             }
+            auto before_shutdown = runner.frame();
+            runner.speed(1);
+            runner.play(true);
+            await_frame(
+                [&](const Frame &f) { return f.running && f.state.steps > before_shutdown->state.steps; });
+            shutdown_start = std::chrono::steady_clock::now();
         }
-        std::cout << "PASS worker pause, step, immutable snapshots, mode preservation, backend transition, "
-                     "shutdown\n";
+        require(std::chrono::steady_clock::now() - shutdown_start < std::chrono::milliseconds(750),
+                "Shutdown waited for the pending one-second deadline");
+        std::cout << "PASS worker pause, step, immutable snapshots, publication cadence, speed changes, "
+                     "mode preservation, backend transition, interruptible shutdown\n";
 #endif
         return 0;
     } catch (const std::exception &e) {

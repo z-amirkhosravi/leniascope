@@ -1,6 +1,5 @@
 #pragma once
 #include "simulation.h"
-#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -39,7 +38,8 @@ class Runner {
     void set_message(std::string);
     std::unique_ptr<Solver> create(State);
     mutable std::mutex mutex;
-    std::condition_variable wake;
+    struct Wake;
+    std::unique_ptr<Wake> wake;
     std::deque<std::function<void()>> commands;
     bool stopping = false;
     std::thread worker;

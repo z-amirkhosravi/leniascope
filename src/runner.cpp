@@ -1,11 +1,56 @@
 #include "runner.h"
 #include "gpu_solver.h"
+#include <Windows.h>
 #include <algorithm>
 #include <chrono>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 namespace lenia {
-Runner::Runner(bool prefer_gpu) {
+struct Runner::Wake {
+    using Clock = std::chrono::steady_clock;
+    using Handle = std::unique_ptr<void, decltype(&CloseHandle)>;
+    Handle command{nullptr, CloseHandle}, timer{nullptr, CloseHandle};
+    Wake() {
+        command.reset(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+        if (!command)
+            throw std::system_error(GetLastError(), std::system_category(), "Create worker command event");
+        timer.reset(CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                           TIMER_MODIFY_STATE | SYNCHRONIZE));
+        // Older Windows versions may not support the high-resolution flag.
+        if (!timer && GetLastError() == ERROR_INVALID_PARAMETER)
+            timer.reset(CreateWaitableTimerW(nullptr, FALSE, nullptr));
+        if (!timer)
+            throw std::system_error(GetLastError(), std::system_category(), "Create worker timer");
+    }
+    void notify() {
+        SetEvent(command.get());
+    }
+    void wait(std::unique_lock<std::mutex> &lock, bool active, Clock::time_point deadline) {
+        if (active) {
+            auto remaining = deadline - Clock::now();
+            if (remaining <= Clock::duration::zero())
+                return;
+            using Ticks = std::chrono::duration<LONGLONG, std::ratio<1, 10000000>>;
+            LARGE_INTEGER due;
+            due.QuadPart = -std::max<LONGLONG>(1, std::chrono::duration_cast<Ticks>(remaining).count());
+            if (!SetWaitableTimerEx(timer.get(), &due, 0, nullptr, nullptr, nullptr, 0))
+                throw std::system_error(GetLastError(), std::system_category(), "Set worker deadline");
+        } else {
+            CancelWaitableTimer(timer.get());
+        }
+        HANDLE handles[]{command.get(), timer.get()};
+        // The auto-reset event remembers commands arriving between unlock and wait. Both
+        // paused and timed waits can be interrupted immediately, including during shutdown.
+        lock.unlock();
+        auto result = WaitForMultipleObjects(active ? 2 : 1, handles, FALSE, INFINITE);
+        auto error = GetLastError();
+        lock.lock();
+        if (result == WAIT_FAILED)
+            throw std::system_error(error, std::system_category(), "Wait for worker deadline");
+    }
+};
+Runner::Runner(bool prefer_gpu) : wake(std::make_unique<Wake>()) {
     use_gpu = prefer_gpu;
     worker = std::thread([this] { loop(); });
 }
@@ -14,7 +59,7 @@ Runner::~Runner() {
         std::lock_guard<std::mutex> lock(mutex);
         stopping = true;
     }
-    wake.notify_one();
+    wake->notify();
     worker.join();
 }
 std::shared_ptr<const Frame> Runner::frame() const {
@@ -36,7 +81,7 @@ void Runner::enqueue(std::function<void()> f) {
             throw std::runtime_error("Simulation command queue is full");
         commands.push_back(std::move(f));
     }
-    wake.notify_one();
+    wake->notify();
 }
 std::unique_ptr<Solver> Runner::create(State s) {
     if (use_gpu)
@@ -159,33 +204,51 @@ void Runner::loop() {
         set_message(e.what());
         return;
     }
-    auto deadline = Clock::now(), last_publish = deadline, rate_start = deadline;
+    auto deadline = Clock::now(), last_step_start = deadline, rate_start = deadline;
     uint64_t interval_steps = 0;
     for (;;) {
         std::deque<std::function<void()>> work;
-        {
+        try {
             std::unique_lock<std::mutex> lock(mutex);
-            if (!running && !single_steps)
-                wake.wait(lock, [this] { return stopping || !commands.empty(); });
-            else
-                wake.wait_until(lock, deadline, [this] { return stopping || !commands.empty(); });
+            while (!stopping && commands.empty() && (!(running || single_steps) || Clock::now() < deadline))
+                wake->wait(lock, running || single_steps, deadline);
             if (stopping)
                 break;
             work.swap(commands);
+        } catch (const std::exception &e) {
+            running = false;
+            single_steps = 0;
+            set_message(e.what());
+            try {
+                publish();
+            } catch (...) {
+            }
+            return;
         }
         try {
+            bool was_active = running || single_steps;
+            double previous_rate = target_rate;
             for (auto &f : work)
                 f();
             auto now = Clock::now();
+            auto period =
+                std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1. / target_rate));
+            // Resume and speed changes must not inherit an old (possibly far away) deadline.
+            if ((running || single_steps) && !was_active)
+                deadline = now;
+            else if (target_rate != previous_rate)
+                deadline = last_step_start + period;
             bool advanced = false;
             if ((running || single_steps) && now >= deadline) {
+                last_step_start = now;
                 sessions[volume]->step();
                 ++interval_steps;
                 advanced = true;
                 if (single_steps)
                     --single_steps;
-                deadline = std::max(Clock::now(), now + std::chrono::duration_cast<Clock::duration>(
-                                                            std::chrono::duration<double>(1. / target_rate)));
+                // Anchor pacing to the schedule, rather than accumulating the wait's overshoot.
+                // If computation falls behind, continue at capacity without a catch-up backlog.
+                deadline = std::max(Clock::now(), deadline + period);
             }
             now = Clock::now();
             double elapsed = std::chrono::duration<double>(now - rate_start).count();
@@ -194,11 +257,10 @@ void Runner::loop() {
                 interval_steps = 0;
                 rate_start = now;
             }
-            if (!work.empty() || (advanced && (single_steps == 0 && !running ||
-                                               now - last_publish >= std::chrono::milliseconds(33)))) {
+            // Retain only the newest immutable state, but offer every completed step. A separate
+            // 30 Hz cap here repeated old images even on a fast solver and high-refresh display.
+            if (!work.empty() || advanced)
                 publish();
-                last_publish = now;
-            }
         } catch (const std::exception &e) {
             running = false;
             single_steps = 0;

@@ -45,10 +45,48 @@ For a checkout inside WSL, prefer the supplied MSBuild solution when building fr
 
 On Linux, CMake builds the portable simulation core and CPU tests only; install a C++17 compiler, CMake, and the FFTW double-precision development library. The desktop renderer and GPU backend require Windows 10/11 and Direct3D feature level 11.0. CI builds Windows and Linux CPU tests; hardware GPU tests are run locally.
 
+### Optional NVIDIA CUDA build
+
+CUDA/cuFFT accelerates the convolution, with a direct GPU-to-GPU display path into the existing Direct3D renderer. It is optional; ordinary builds retain DirectCompute and require no CUDA components. From PowerShell, with Python 3.9+ and the MSVC v142 tools installed:
+
+```powershell
+python tools/setup_cuda.py
+.\tools\build_cuda.ps1 -Test
+.\x64\Cuda\Release\Leniascope.exe
+```
+
+The setup script downloads NVIDIA's pinned CUDA 12.9.1 compiler, cuFFT, runtime and dependencies into the ignored `x64/CudaToolkit` directory, verifying the archives against NVIDIA's SHA-256 manifest. It preserves the component licenses and makes no driver, registry or global PATH changes. A compatible NVIDIA driver is required separately. The build copies the required runtime DLLs beside the GUI, CLI and benchmark. Keep those DLLs with the executables. Native code targets the RTX 5070 Ti's architecture, with PTX for compute capability 7.5 and later as a fallback; other GPUs have not been tested locally.
+
+The CUDA build offers **CPU reference**, **DirectCompute**, and **CUDA / cuFFT** in the compute selector. The choice is remembered; `--cuda` overrides it at startup. Existing workspaces continue using their selected CPU/DirectCompute backend. If CUDA solver or display initialization fails, startup reports the failure and tries DirectCompute, then CPU. Switching backends preserves paused fields subject to the selected solver's precision. CUDA uses float32, so long trajectories need not match either other backend.
+
+The CUDA CLI accepts `--backend cuda`. `x64/CudaBench/CudaBench.exe --tests-only` checks CPU/DirectCompute agreement, both rules, rectangular and non-cubic grids, kernel edits, exact checkpoint continuation, display statistics, immutable frames, concurrent rendering and backend transitions. `--benchmark-only` writes CSV to stdout; initialization and diagnostics go to stderr. `python tools/test_cli.py x64/Cuda/Release/LeniascopeCli.exe --cuda` and `python tools/test_workspace.py x64/Cuda/Release/Leniascope.exe x64/Cuda/Release/LeniascopeCli.exe --cuda` exercise CUDA checkpoint/recovery paths end to end.
+
+Windows CMake 3.21+ also supports `-DLENIA_ENABLE_CUDA=ON` with a CUDA 12.8+ toolkit and a compatible host compiler. This was verified with Ninja, CUDA 12.9.1 and MSVC v142. Point `CMAKE_CUDA_COMPILER` at `nvcc.exe` and `CUDAToolkit_ROOT` at the toolkit directory when it is not installed globally. For a WSL checkout, run Ninja/CMake under a temporary drive mapping (`pushd` from a Windows command prompt) because generated link commands cannot use a UNC working directory. The supplied PowerShell/MSBuild script handles the WSL checkout directly.
+
+Local comparison on 2026-10-12, RTX 5070 Ti / Core Ultra 9 285K, driver 610.47, CUDA 12.9.1, MSVC v142 Release:
+
+| Grid | Headless step: DirectCompute → CUDA | Step + display + render: DirectCompute → CUDA |
+|---|---:|---:|
+| 1024² | 0.290 → 0.098 ms | 0.477 → 0.563 ms |
+| 128³ | 0.805 → 0.141 ms | 1.302 → 0.793 ms |
+| 256³ | 8.734 → 1.609 ms | 9.751 → 2.898 ms |
+
+These are medians from 100 steps after 10 warm-up steps, seed 42, the default ten-patch recipe, classic rule, `dt=0.1`, and radii 104/26/26 respectively. Display measurements include a 960×720 slice (2D) or default transparent volume (3D), waiting for rendering to complete. Initialization and full-field checkpoint copies are excluded. They measure a serial pipeline, not window FPS; the desktop and an existing Leniascope window remained active. [Raw CSV](benchmarks/cuda-2026-10-12.csv) contains p95 and component timings. `cuda_explicit_device_bytes` counts solver arrays, cuFFT scratch, statistics and allocated display textures, excluding CUDA/driver/library overhead and renderer allocations; blank means unmeasured. At 256³ it reports about 257 MiB headless and 385 MiB with the two display textures used by this run.
+
+CUDA substantially accelerates large 3D fields, but interop overhead makes the complete 2D display path slightly slower in this test. Both GPU backends therefore remain useful. Five-step CPU/CUDA comparisons were within `3.3e-6` maximum absolute error on the tested grids. A 500-step 32³ classic trajectory reached about `0.004` maximum difference: short-step accuracy does not establish long-term equivalence.
+
+Actual-window profiling on the same machine also sustained **120 and 240 steps/s at 256³ with CUDA**. Each run started from the same seed-1 field with 80 patches, radius 26 and default classic parameters. The 1280×820 logical window rendered a transparent volume; CUDA runs recorded roughly 160 presentations/s. The CSV retains 299 measured frames after warm-up. These are short runs, not a sustained thermal/load test. Presentation intervals measure application timing, not photon latency.
+
+| Backend / requested rate | Measured steps/s | Presentation interval median / p95 | Raw profile |
+|---|---:|---:|---|
+| DirectCompute / 120 | 103.0 | 6.41 / 12.55 ms | [CSV](benchmarks/window-256cube-directcompute-120-2026-10-12.csv) |
+| CUDA / 120 | 119.7 | 6.25 / 6.38 ms | [CSV](benchmarks/window-256cube-cuda-120-2026-10-12.csv) |
+| CUDA / 240 | 240.0 | 6.25 / 6.40 ms | [CSV](benchmarks/window-256cube-cuda-240-2026-10-12.csv) |
+
 ## Using the laboratory
 
 - **Play / Pause**, **Step**, **Reset**, and **New seed** stay in the toolbar. Space toggles playback when not editing text. Reset repeats the displayed seed; New seed advances it.
-- GPU compute is selected initially, with a visible CPU fallback if compute initialization fails. Uncheck it to use the double-precision FFTW reference. Rendering still uses Direct3D.
+- DirectCompute GPU compute is selected initially, with a visible CPU fallback if compute initialization fails. Uncheck it to use the double-precision FFTW reference, or use the compute selector in CUDA builds. Rendering still uses Direct3D.
 - **2D field** and **3D volume** preserve independent simulation states and view settings. The inspector and viewport keep the same layout.
 - **Grid and initialization** exposes patch count, minimum/maximum side length in kernel radii, and the random value range. These controls affect Reset, New seed, and Create grid; changing them does not modify an evolving field. Counts and ranges are independent for 2D and 3D.
 - Parameter edits take effect through **Apply changes**, at a simulation step boundary. Simulation `dt` and the requested steps/s are independent.
@@ -89,7 +127,7 @@ On the RTX 5070 Ti / Core Ultra 9 285K (2026-10-11), median total time fell from
 
 `Leniascope.exe --profile` runs the actual window for 330 running frames, exports its own rendered buffers, gracefully closes, and writes `frame-profile.csv` in the current directory, discarding 30 warm-up frames. Like `--smoke`, it uses a fresh isolated session unless you explicitly pass `--workspace <directory>`. Use a disposable workspace to select a different grid/rate; that workspace is advanced and saved by the profiling run. Keep the test window visible. `--profile --cpu-transfer` measures the earlier display path. The CSV records presentation intervals, compute duration, publication wall time, draw submission wall time, Present wall time, displayed step, and backend. Draw/Present submission durations are not GPU render timestamps or display photon latency.
 
-In actual-window runs on that machine, 128³ sustained 60 and 120 steps/s; 256³ sustained 60 steps/s and reached about 81 steps/s when 120 was requested. Viewport size, volume contents, camera, sample spacing, refresh rate, and other GPU work affect these numbers. The remaining large-grid cost is primarily FFT computation, making NVIDIA's [CUDA/cuFFT library](https://docs.nvidia.com/cuda/cufft/index.html) a candidate for a separately validated backend. CUDA is not required or installed by this change.
+In those actual-window DirectCompute runs, 128³ sustained 60 and 120 steps/s; 256³ sustained 60 steps/s and reached about 81 steps/s when 120 was requested. Viewport size, volume contents, camera, sample spacing, refresh rate, and other GPU work affect these numbers. The remaining large-grid cost was primarily FFT computation, motivating the optional CUDA/cuFFT backend described above.
 
 `RenderTests` checks pixel-for-pixel agreement between the two display paths, GPU statistics, immutable/bounded display leases, concurrent rendering, and checkpoint/backend/restore transitions. `python tools/test_workspace.py <GUI> <CLI> --gpu` exercises actual GPU-backed GUI restart and byte-exact field recovery; omit `--gpu` for CPU recovery.
 
@@ -98,6 +136,8 @@ In actual-window runs on that machine, 128³ sustained 60 and 120 steps/s; 256³
 `src/simulation.*` contains validated field configuration, deterministic SplitMix64 initialization, periodic kernels, the double-precision FFTW solver, checkpoints, and recurrence measurements. It contains no Win32 dependency. Array order is `(z * height + y) * width + x`; FFT dimensions are explicitly `(depth, height, width)`. This corrects the legacy solver's transposed dimensions on rectangular/non-cubic grids. Radius is limited to half the shortest active dimension to avoid ambiguous wrapped kernel construction.
 
 `src/gpu_solver.*` implements a separable complex radix-2 FFT and the update rule in DirectCompute float32. Each axis transforms independent rows using group-shared memory. State and FFT intermediates stay on the GPU between steps. Completion fences keep the worker from polling on coarse Windows timers. GPU stage timing is currently reported as an overall compute duration; CPU timings separate forward FFT, multiplication, inverse FFT, and update.
+
+`src/cuda_solver.*` implements the same rules with cuFFT real-to-complex/complex-to-real transforms, storing only the nonredundant spectrum. Plans and their shared scratch space persist for the solver's lifetime. CUDA events report the individual compute stages and provide blocking completion waits. Display textures are registered with CUDA and populated without a full CPU field transfer. CUDA's internal Direct3D calls require `ID3D11Multithread` protection in addition to the application's submission mutex; the CUDA display path enables it before registering resources.
 
 `src/runner.*` owns mutable simulation states and solver resources on one worker. UI commands are bounded and processed between steps. Every completed step is offered to the display; a slower viewer can skip intermediate images without dropping numerical steps. A [high-resolution Windows waitable timer](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw) paces the worker against steady-clock deadlines, with a separate event for immediate command/shutdown wakeups and an ordinary timer fallback. This avoids both the former 30 Hz publication cap and accumulated sleep drift.
 
@@ -130,7 +170,7 @@ Float32 GPU trajectories can diverge from float64 CPU trajectories over many ste
 .\x64\Modern\Release\LeniascopeCli.exe converge first.lenia --steps 20 --levels 4 > convergence.csv
 ```
 
-Sweep filenames receive `.run-N` suffixes. A seed identifies the initialization algorithm and its input; checkpoints contain the actual field. Version 3 stores dimensions, parameters, rule, smoothing sharpness, seed, step count, simulation time, solver identifier, double-valued state, and an optional initialization recipe (count, size/value ranges, and the radius used when seeding). CSV schema 3 also records this recipe. Version 2 checkpoints and version 1 workspace preferences remain readable; unavailable seed provenance is marked unknown. The recipe is not a history of subsequent parameter edits. GPU values are promoted from float32 when saved, without adding precision. Writes use a temporary sibling and rename after a successful close. The binary format assumes little-endian IEEE-754, as on the supported Windows/x86-64 and tested Linux/x86-64 systems. Valid legacy 2D `Leniav1` files can be imported; ambiguous legacy 3D payloads are rejected.
+Sweep filenames receive `.run-N` suffixes. A seed identifies the initialization algorithm and its input; checkpoints contain the actual field. Version 3 stores dimensions, parameters, rule, smoothing sharpness, seed, step count, simulation time, solver identifier, double-valued state, and an optional initialization recipe (count, size/value ranges, and the radius used when seeding). CSV schema 3 also records this recipe. Version 2 checkpoints remain readable; unavailable seed provenance is marked unknown. Workspace preferences are now version 3, adding the CUDA choice, and still read versions 1 and 2. The recipe is not a history of subsequent parameter edits. GPU values are promoted from float32 when saved, without adding precision. Writes use a temporary sibling and rename after a successful close. The binary format assumes little-endian IEEE-754, as on the supported Windows/x86-64 and tested Linux/x86-64 systems. Valid legacy 2D `Leniav1` files can be imported; ambiguous legacy 3D payloads are rejected.
 
 `compare` computes periodic cross-correlation with FFTW, then verifies the best integer translation using an RMS residual. Its convention is `second(x + d)` compared with `first(x)`. It reports the time difference, translation, and residual; this is a candidate-recurrence diagnostic, not a proof of a relative periodic orbit. Constant or symmetric fields can have non-unique best translations. Subcell shifts, continuation, stability analysis, and certified orbit finding remain research work.
 
@@ -163,6 +203,16 @@ Run `tools/benchmark.ps1` for matched seeded CPU/GPU measurements. Initial 30-st
 | 128 x 128 x 128 | 46 | 555 | 20.98 | 0.720 |
 
 These are short local headless measurements, not universal speedups or display frame rates. Planning, shader compilation, and initialization precede the timed region; snapshot/CSV work is included in wall throughput. The original baseline used a different dense initial state: approximately 20.66/40.62 ms per step for 2D/3D and 6.62/1.58 ms for its color loops. It demonstrated a 0.1512 one-step error on a 16x8 grid. The new CPU direct-convolution checks were below 1e-12, and the tested five-step GPU comparisons below 3e-6.
+
+## Research direction and next work
+
+The next planned feature is a reference-pattern gallery: actual saved fields with previews, model parameters, provenance, numerical backend, and measured behavior. A seed recipe alone cannot stand in for a discovered organism. Separate verified references from tentative sightings and record the observation duration. This provides repeatable starting points for numerical comparisons and later automated searches. The items below are research plans, not implemented classifiers or established explanations.
+
+Orbium work should distinguish **existence**, **stability**, and **accessibility from a particular seeding distribution**. Failure to find an organism by random seeding does not settle the first two. Compare classic and smooth models from the same saved organisms, measure motion and recurrence, and track the activity of expanding fronts. The current Smooth reaction is a different birth/death law, not a controlled approximation to classic clipping; a controlled smoothing experiment needs a separately defined family and convergence checks. Likewise, carrying the same radial kernel profile into 3D changes the weight of spherical shells. Kernel geometry and discretization should be explicit experimental variables. Published 3D Lenia organisms already exist; any novelty claim needs a precise definition and literature comparison, for example with Chan's [higher-dimensional study](https://arxiv.org/abs/2005.03742).
+
+For initial-condition statistics, begin with controlled **two-patch experiments**: sweep periodic separation relative to kernel radius, orientation, size, value distribution and shape. Record actual starting fields and repeated seeds. Classify outcomes at a stated observation horizon, retaining mixed, transient and unknown cases alongside descriptive labels such as spheres, tubes and extinction. Connected components must respect periodic boundaries. The measured outcome frequencies belong to that particular distribution and model, not to state space in general. Changes in grid extent and changes in spatial resolution require separate controls.
+
+Prediction of 2D Orbium formation can then use the labeled runs. First compare simple interpretable features—mass, patch distances, overlap, spatial correlations and early-front measurements—against base-rate and short-simulation baselines. Distinguish a predictor using only the initial field from one observing part of the evolution. Split related trajectories and parameter families carefully when evaluating generalization, and include computation cost. A neural network is an option once the dataset and success criteria are reliable, rather than a prerequisite for the study.
 
 ## Legacy application
 

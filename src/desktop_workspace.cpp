@@ -24,11 +24,13 @@ StartupOptions startup_options() {
             options.smoke = true;
         } else if (arg == L"--cpu-transfer")
             options.cpu_transfer = true;
+        else if (arg == L"--cuda")
+            options.cuda = true;
         else if (arg == L"--workspace" && i + 1 < count && options.workspace.empty())
             options.workspace = argv[++i];
         else
             throw std::invalid_argument(
-                "Use --smoke, --profile, --cpu-transfer, and/or --workspace <directory>");
+                "Use --smoke, --profile, --cuda, --cpu-transfer, and/or --workspace <directory>");
     }
     return options;
 }

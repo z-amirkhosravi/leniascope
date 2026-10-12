@@ -1,4 +1,7 @@
 #include "gpu_solver.h"
+#ifdef LENIA_ENABLE_CUDA
+#include "cuda_solver.h"
+#endif
 #include "d3d_support.h"
 #include <algorithm>
 #include <chrono>
@@ -226,10 +229,26 @@ struct GpuSolver::Impl {
         ctx->CopyResource(kernel.Get(), data.Get());
     }
 };
-GpuSolver::GpuSolver(State s, std::shared_ptr<GpuContext> gpu)
-    : impl(std::make_unique<Impl>(std::move(s), std::move(gpu))) {}
+GpuSolver::GpuSolver(State s, std::shared_ptr<GpuContext> gpu, bool cuda) {
+    if (cuda) {
+#ifdef LENIA_ENABLE_CUDA
+        bool display = bool(gpu);
+        auto solver = std::make_unique<CudaSolver>(std::move(s), std::move(gpu));
+        if (display)
+            solver->display_snapshot(); // Validate interop before committing a backend transition.
+        accelerated = std::move(solver);
+#else
+        throw std::runtime_error("This build does not include CUDA; use the optional CUDA build");
+#endif
+    } else
+        impl = std::make_unique<Impl>(std::move(s), std::move(gpu));
+}
 GpuSolver::~GpuSolver() = default;
 void GpuSolver::step() {
+    if (accelerated) {
+        accelerated->step();
+        return;
+    }
     auto &p = *impl;
     auto lock = p.gpu->lock();
     p.ctx->Begin(p.disjoint.Get());
@@ -268,6 +287,8 @@ void GpuSolver::step() {
     p.state.time += p.state.config.dt;
 }
 State GpuSolver::snapshot() {
+    if (accelerated)
+        return accelerated->snapshot();
     auto &p = *impl;
     State s = p.state;
     s.values.resize(s.config.count());
@@ -290,6 +311,10 @@ State GpuSolver::snapshot() {
     return s;
 }
 std::shared_ptr<const GpuImage> GpuSolver::display_snapshot() {
+#ifdef LENIA_ENABLE_CUDA
+    if (accelerated)
+        return static_cast<CudaSolver *>(accelerated.get())->display_snapshot();
+#endif
     auto &p = *impl;
     std::shared_ptr<GpuImage> image;
     for (auto &candidate : p.images)
@@ -351,6 +376,10 @@ std::shared_ptr<const GpuImage> GpuSolver::display_snapshot() {
     return image;
 }
 void GpuSolver::parameters(const Config &c) {
+    if (accelerated) {
+        accelerated->parameters(c);
+        return;
+    }
     c.validate();
     auto &p = *impl;
     const auto &old = p.state.config;
@@ -363,6 +392,8 @@ void GpuSolver::parameters(const Config &c) {
         p.rebuild_kernel();
 }
 const Timings &GpuSolver::timings() const {
+    if (accelerated)
+        return accelerated->timings();
     return impl->timing;
 }
 } // namespace lenia

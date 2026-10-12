@@ -20,7 +20,7 @@ int main(int argc, char **argv) {
                    "    [--patches 10] [--patch-min 0.6] [--patch-max 1.2]  (sides / radius)\n"
                    "    [--value-min 0] [--value-max 1]\n"
                    "    [--steps 100] [--dt 0.1] [--mu 0.15] [--sigma 0.017]\n"
-                   "    [--backend cpu|gpu] [--rule classic|smooth] [--sharpness 12]\n"
+                   "    [--backend cpu|gpu|cuda] [--rule classic|smooth] [--sharpness 12]\n"
                    "    [--input checkpoint.lenia] [--output checkpoint.lenia]\n"
                    "    [--csv metrics.csv] [--sample-every 10] [--checkpoint-every 0]\n"
                    "    [--sweep-mu 0.13,0.14,0.15]\n"
@@ -144,7 +144,7 @@ int main(int argc, char **argv) {
             throw std::invalid_argument("Unknown rule");
         c.rule = rule == "classic" ? Rule::Classic : Rule::SmoothReaction;
         std::string backend = get("--backend", "cpu");
-        if (backend != "cpu" && backend != "gpu")
+        if (backend != "cpu" && backend != "gpu" && backend != "cuda")
             throw std::invalid_argument("Unknown backend");
         int steps = integer("--steps", "100"), every = integer("--sample-every", "10"),
             checkpoint = integer("--checkpoint-every", "0");
@@ -183,8 +183,8 @@ int main(int argc, char **argv) {
             } else
                 s = random_state(c, seed, seed_settings);
             std::unique_ptr<Solver> solver;
-            if (backend == "gpu")
-                solver = std::make_unique<GpuSolver>(s);
+            if (backend == "gpu" || backend == "cuda")
+                solver = std::make_unique<GpuSolver>(s, nullptr, backend == "cuda");
             else
                 solver = std::make_unique<CpuSolver>(s);
             auto path = [&](const char *option) {

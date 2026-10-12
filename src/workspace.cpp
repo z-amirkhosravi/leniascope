@@ -137,7 +137,7 @@ std::string encode_preferences(const Preferences &p) {
     validate(p);
     std::ostringstream out;
     out.imbue(std::locale::classic());
-    out << std::setprecision(std::numeric_limits<double>::max_digits10) << "LeniascopeWorkspace 2\n"
+    out << std::setprecision(std::numeric_limits<double>::max_digits10) << "LeniascopeWorkspace 3\n"
         << p.steps_per_second << ' ' << p.gpu << ' ' << p.volume << ' ' << p.recovery << ' ' << p.window_width
         << ' ' << p.window_height << ' ' << p.maximized << '\n';
     for (const auto &v : p.views) {
@@ -153,6 +153,7 @@ std::string encode_preferences(const Preferences &p) {
         out << s.patches << ' ' << s.size_min << ' ' << s.size_max << ' ' << s.value_min << ' ' << s.value_max
             << ' ' << p.keep_seed_coverage[i] << ' ' << p.scale_radius[i] << '\n';
     }
+    out << p.cuda << '\n';
     return out.str();
 }
 Preferences decode_preferences(const std::string &text) {
@@ -163,7 +164,7 @@ Preferences decode_preferences(const std::string &text) {
     int version;
     if (!(in >> magic >> version >> p.steps_per_second >> p.gpu >> p.volume >> p.recovery >> p.window_width >>
           p.window_height >> p.maximized) ||
-        magic != "LeniascopeWorkspace" || (version != 1 && version != 2))
+        magic != "LeniascopeWorkspace" || (version < 1 || version > 3))
         throw std::runtime_error("Invalid workspace settings header");
     for (auto &v : p.views) {
         in >> v.view >> v.axis >> v.palette >> v.slice >> v.yaw >> v.pitch >> v.distance >> v.opacity >>
@@ -171,12 +172,14 @@ Preferences decode_preferences(const std::string &text) {
         for (auto &offset : v.offset)
             in >> offset;
     }
-    if (version == 2)
+    if (version >= 2)
         for (int i = 0; i < 2; ++i) {
             auto &s = p.seeds[i];
             in >> s.patches >> s.size_min >> s.size_max >> s.value_min >> s.value_max >>
                 p.keep_seed_coverage[i] >> p.scale_radius[i];
         }
+    if (version >= 3)
+        in >> p.cuda;
     if (!in)
         throw std::runtime_error("Truncated workspace settings");
     in >> std::ws;

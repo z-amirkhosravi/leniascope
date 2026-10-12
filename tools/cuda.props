@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup Condition="'$(LeniaCudaRoot)'!=''">
+    <ClCompile><PreprocessorDefinitions>LENIA_ENABLE_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <Link><AdditionalDependencies>$(LeniaCudaObject);$(LeniaCudaRoot)\lib\x64\cudart.lib;$(LeniaCudaRoot)\lib\x64\cufft.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <Target Name="CudaRuntime" AfterTargets="Build" Condition="'$(LeniaCudaRoot)'!=''">
+    <ItemGroup>
+      <CudaRuntimeFile Include="$(LeniaCudaRoot)\bin\cudart64_12.dll;$(LeniaCudaRoot)\bin\cufft64_11.dll;$(LeniaCudaRoot)\bin\nvJitLink_120_0.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(CudaRuntimeFile)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

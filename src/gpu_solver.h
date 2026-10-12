@@ -16,10 +16,10 @@ struct GpuImage {
     ComPtr<ID3D11ShaderResourceView> view;
 };
 #endif
-// Float32 DirectCompute backend; optionally shares the renderer's device/context.
+// Float32 GPU backend; optionally shares the renderer's device/context.
 class GpuSolver final : public Solver {
   public:
-    explicit GpuSolver(State, std::shared_ptr<GpuContext> = {});
+    explicit GpuSolver(State, std::shared_ptr<GpuContext> = {}, bool cuda = false);
     ~GpuSolver();
     void step() override;
     State snapshot() override;
@@ -31,5 +31,6 @@ class GpuSolver final : public Solver {
   private:
     struct Impl;
     std::unique_ptr<Impl> impl;
+    std::unique_ptr<Solver> accelerated;
 };
 } // namespace lenia

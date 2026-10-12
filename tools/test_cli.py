@@ -101,4 +101,15 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
     changed = changed_radius.read_bytes()
     assert struct.unpack_from('<i', changed, 20)[0] == 4
     assert struct.unpack_from('<i', changed, offset+8)[0] == 3 # Preserve the actual seeding radius.
+    if '--cuda' in sys.argv[2:]:
+        for backend in ('gpu', 'cuda'):
+            full, partial, resumed = (root / f'{backend}-{part}.lenia' for part in ('full', 'partial', 'resumed'))
+            trace = root / f'{backend}.csv'
+            run('run', '--input', arg_path(custom), '--backend', backend, '--steps', 12, '--output', arg_path(full), '--csv', arg_path(trace))
+            run('run', '--input', arg_path(custom), '--backend', backend, '--steps', 5, '--output', arg_path(partial))
+            run('run', '--input', arg_path(partial), '--backend', backend, '--steps', 7, '--output', arg_path(resumed))
+            assert full.read_bytes() == resumed.read_bytes(), f'{backend} checkpoint continuation differs'
+            records = list(csv.DictReader(trace.open()))
+            assert all(r['backend'] == backend and r['seed_patches'] == '23' for r in records)
+        print('PASS CUDA/DirectCompute CLI checkpoints, exact continuation and CSV backend labels')
     print('PASS seed recipes, v2 migration, CSV metadata; CLI malformed checkpoints, resume equivalence, recurrence, sweep CSV, timestep study, invalid options')

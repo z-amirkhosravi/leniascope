@@ -40,6 +40,7 @@
     <ClCompile Include="..\cmap.cpp" />
     <ClCompile Include="..\src\simulation.cpp" />
   </ItemGroup>
+  <Import Project="..\tools\cuda.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="Runtime" AfterTargets="Build">
     <Copy SourceFiles="$(ProjectDir)..\fftw_lib\64bit\libfftw3-3.dll" DestinationFolder="$(OutDir)" />

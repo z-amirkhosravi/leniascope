@@ -16,14 +16,14 @@ struct Frame {
     Timings timings;
     Measures measures;
     uint64_t serial = 0, generation = 0, initialization_revision = 0;
-    bool running = false, gpu = false;
+    bool running = false, gpu = false, cuda = false;
     double steps_per_second = 0;
 };
 class Runner {
   public:
     explicit Runner(bool prefer_gpu = true, SessionStates initial = {}, bool initial_volume = true,
                     std::function<void()> notify_frame = {}, std::shared_ptr<GpuContext> display_context = {},
-                    std::array<SeedSettings, 2> seeds = {});
+                    std::array<SeedSettings, 2> seeds = {}, bool prefer_cuda = false);
     ~Runner();
     Runner(const Runner &) = delete;
     Runner &operator=(const Runner &) = delete;
@@ -34,7 +34,7 @@ class Runner {
     void reset(Config, uint64_t, SeedSettings = {});
     void parameters(Config);
     void mode(bool volume);
-    void backend(bool gpu);
+    void backend(bool gpu, bool cuda = false);
     void speed(double steps_per_second);
     void save(std::string);
     void load(std::string);
@@ -63,7 +63,7 @@ class Runner {
     std::unique_ptr<Solver> sessions[2];
     std::array<SeedSettings, 2> seed_defaults;
     uint64_t initialization_revision[2]{};
-    bool volume = true, use_gpu = false, running = false;
+    bool volume = true, use_gpu = false, use_cuda = false, running = false;
     double target_rate = 60, measured_rate = 0;
     uint64_t serial = 0, generation = 0;
 };

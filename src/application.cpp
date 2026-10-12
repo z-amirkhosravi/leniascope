@@ -181,6 +181,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         }
     }
     auto preferences = restored.preferences;
+    if (options.cuda) {
+        preferences.gpu = true;
+        preferences.cuda = true;
+    }
     for (auto &view : preferences.views)
         if (size_t(view.palette) >= Renderer::palette_names().size())
             view.palette = 0;
@@ -257,7 +261,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     Runner runner(
         preferences.gpu, std::move(restored.states), preferences.volume,
         [window] { PostMessageW(window, WM_APP + 1, 0, 0); }, options.cpu_transfer ? nullptr : gpu_context,
-        preferences.seeds);
+        preferences.seeds, preferences.cuda);
     runner.speed(preferences.steps_per_second);
     auto &views = preferences.views;
     bool done = false, dirty_config = false;
@@ -273,7 +277,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     struct ProfileRow {
         double elapsed, interval, compute, preparation, draw_submit, present;
         uint64_t step;
-        bool gpu;
+        bool gpu, cuda;
     };
     std::vector<ProfileRow> profile;
     auto profile_start = std::chrono::steady_clock::now(), profile_previous = profile_start;
@@ -307,6 +311,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             preferences.steps_per_second = rate;
             if (frame) {
                 preferences.gpu = frame->gpu;
+                preferences.cuda = frame->cuda;
                 preferences.volume = frame->state.config.depth > 1;
             }
             WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};
@@ -395,8 +400,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 closing_sessions = closing_snapshot.get();
                 preferences.volume = closing_sessions->volume;
                 preferences.steps_per_second = rate;
-                if (auto final_frame = runner.frame())
+                if (auto final_frame = runner.frame()) {
                     preferences.gpu = final_frame->gpu;
+                    preferences.cuda = final_frame->cuda;
+                }
                 if (writer)
                     writer->request(preferences, preferences.recovery ? closing_sessions : std::nullopt);
                 closing_stage = 2;
@@ -511,9 +518,17 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 runner.mode(mode == 1);
                 dirty_config = false;
             }
+#ifdef LENIA_ENABLE_CUDA
+            int backend = frame && frame->gpu ? (frame->cuda ? 2 : 1) : 0;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("##compute", &backend,
+                             "CPU reference (float64)\0DirectCompute (float32)\0CUDA / cuFFT (float32)\0"))
+                runner.backend(backend != 0, backend == 2);
+#else
             bool gpu = frame && frame->gpu;
             if (ImGui::Checkbox("GPU compute (float32)", &gpu))
                 runner.backend(gpu);
+#endif
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("CPU uses double precision. GPU trajectories may diverge over long runs.");
             ImGui::Spacing();
@@ -835,7 +850,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             auto now = std::chrono::steady_clock::now();
             profile.push_back({milliseconds(profile_start, now), milliseconds(profile_previous, now),
                                frame->timings.total_ms, frame->publication_ms, draw_submit_ms, present_ms,
-                               frame->state.steps, frame->gpu});
+                               frame->state.steps, frame->gpu, frame->cuda});
             profile_previous = now;
         }
         if (present == DXGI_STATUS_OCCLUDED)
@@ -851,8 +866,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         for (size_t i = 30; i < profile.size(); ++i) {
             const auto &r = profile[i];
             out << r.elapsed << ',' << r.interval << ',' << r.compute << ',' << r.preparation << ','
-                << r.draw_submit << ',' << r.present << ',' << r.step << ',' << (r.gpu ? "gpu" : "cpu")
-                << '\n';
+                << r.draw_submit << ',' << r.present << ',' << r.step << ','
+                << (r.cuda ? "cuda" : (r.gpu ? "gpu" : "cpu")) << '\n';
         }
         if (!out)
             throw std::runtime_error("Cannot write frame profile");

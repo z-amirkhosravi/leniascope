@@ -47,6 +47,7 @@ void workspace_tests() {
     p.seeds[0] = {23, .8, 1.5, .2, .7};
     p.keep_seed_coverage[0] = false;
     p.scale_radius[1] = true;
+    p.cuda = true;
     auto encoded = encode_preferences(p);
     check(encode_preferences(decode_preferences(encoded)) == encoded, "Workspace settings round trip");
     for (const auto &bad :
@@ -65,10 +66,14 @@ void workspace_tests() {
     for (int i = 0; i < 4; ++i)
         end = legacy.find('\n', end) + 1;
     legacy.resize(end);
-    legacy.replace(legacy.find("Workspace 2"), 11, "Workspace 1");
+    legacy.replace(legacy.find("Workspace 3"), 11, "Workspace 1");
     auto old = decode_preferences(legacy);
     check(old.seeds[0].patches == 10 && old.keep_seed_coverage[0] && !old.scale_radius[1],
           "Legacy preference migration");
+    auto v2 = encoded.substr(0, encoded.find_last_of('\n', encoded.size() - 2) + 1);
+    v2.replace(v2.find("Workspace 3"), 11, "Workspace 2");
+    auto previous = decode_preferences(v2);
+    check(!previous.cuda && previous.seeds[0].patches == 23, "Version 2 preference migration");
     auto invalid = p;
     invalid.views[1].yaw = std::numeric_limits<float>::quiet_NaN();
     bool rejected = false;

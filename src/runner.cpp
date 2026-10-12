@@ -52,10 +52,11 @@ struct Runner::Wake {
     }
 };
 Runner::Runner(bool prefer_gpu, SessionStates initial, bool initial_volume, std::function<void()> notify,
-               std::shared_ptr<GpuContext> display, std::array<SeedSettings, 2> seeds)
+               std::shared_ptr<GpuContext> display, std::array<SeedSettings, 2> seeds, bool prefer_cuda)
     : wake(std::make_unique<Wake>()), display_context(std::move(display)), notify_frame(std::move(notify)) {
     seed_defaults = seeds;
     use_gpu = prefer_gpu;
+    use_cuda = prefer_gpu && prefer_cuda;
     volume = initial_volume;
     worker = std::thread([this, initial = std::move(initial)]() mutable {
         loop(std::move(initial));
@@ -97,7 +98,7 @@ void Runner::enqueue(std::function<void()> f) {
 }
 std::unique_ptr<Solver> Runner::create(State s) {
     if (use_gpu)
-        return std::make_unique<GpuSolver>(std::move(s), display_context);
+        return std::make_unique<GpuSolver>(std::move(s), display_context, use_cuda);
     return std::make_unique<CpuSolver>(std::move(s));
 }
 void Runner::play(bool b) {
@@ -145,25 +146,28 @@ void Runner::mode(bool v) {
         set_message("Restored independent simulation session");
     });
 }
-void Runner::backend(bool gpu) {
-    enqueue([this, gpu] {
-        if (use_gpu == gpu)
+void Runner::backend(bool gpu, bool cuda) {
+    cuda = gpu && cuda;
+    enqueue([this, gpu, cuda] {
+        if (use_gpu == gpu && use_cuda == cuda)
             return;
         std::unique_ptr<Solver> next[2];
         for (int i = 0; i < 2; ++i)
             if (sessions[i]) {
                 auto s = sessions[i]->snapshot();
                 if (gpu)
-                    next[i] = std::make_unique<GpuSolver>(std::move(s), display_context);
+                    next[i] = std::make_unique<GpuSolver>(std::move(s), display_context, cuda);
                 else
                     next[i] = std::make_unique<CpuSolver>(std::move(s));
             }
         for (int i = 0; i < 2; ++i)
             sessions[i] = std::move(next[i]);
         use_gpu = gpu;
+        use_cuda = cuda;
         if (sessions[!volume])
             publish(!volume);
-        set_message(gpu ? "GPU float solver active" : "CPU double reference active");
+        set_message(cuda ? "CUDA / cuFFT float solver active"
+                         : (gpu ? "DirectCompute float solver active" : "CPU double reference active"));
     });
 }
 void Runner::speed(double rate) {
@@ -247,6 +251,7 @@ void Runner::publish(int index) {
     f->initialization_revision = initialization_revision[index];
     f->running = running && index == int(volume);
     f->gpu = use_gpu;
+    f->cuda = use_cuda;
     f->steps_per_second = running ? measured_rate : 0;
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -275,7 +280,15 @@ void Runner::loop(SessionStates initial) {
         };
         std::string message = "Ready. Press Play or Space.";
         try {
-            initialize();
+            try {
+                initialize();
+            } catch (const std::exception &e) {
+                if (!use_cuda)
+                    throw;
+                use_cuda = false;
+                message = std::string("CUDA unavailable; using DirectCompute: ") + e.what();
+                initialize();
+            }
         } catch (const std::exception &e) {
             if (!use_gpu)
                 throw;

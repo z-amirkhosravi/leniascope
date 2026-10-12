@@ -20,7 +20,7 @@ struct Preferences {
     std::array<bool, 2> keep_seed_coverage{true, true}, scale_radius{false, false};
     double steps_per_second = 60;
     int window_width = 1440, window_height = 940;
-    bool gpu = true, volume = true, recovery = true, maximized = false;
+    bool gpu = true, volume = true, recovery = true, maximized = false, cuda = false;
     Preferences() {
         views[0].view = 0;
     }

@@ -3,6 +3,8 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dxgi1_2.h>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <wrl/client.h>
@@ -52,4 +54,19 @@ inline void make_device(ComPtr<ID3D11Device> &device, ComPtr<ID3D11DeviceContext
         *name = buffer;
     }
 }
+// Share resources on one device. Every immediate-context/DXGI submission is serialized;
+// expensive CPU work and GPU completion waits must happen outside this lock.
+struct GpuContext {
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    std::string adapter;
+    std::recursive_mutex mutex;
+    auto lock() {
+        return std::unique_lock<std::recursive_mutex>(mutex);
+    }
+    GpuContext() {
+        make_device(device, context, &adapter);
+    }
+    GpuContext(ID3D11Device *d, ID3D11DeviceContext *c) : device(d), context(c) {}
+};
 } // namespace lenia

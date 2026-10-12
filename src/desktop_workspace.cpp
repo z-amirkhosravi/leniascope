@@ -19,10 +19,16 @@ StartupOptions startup_options() {
         std::wstring arg = argv[i];
         if (arg == L"--smoke")
             options.smoke = true;
+        else if (arg == L"--profile") {
+            options.profile = true;
+            options.smoke = true;
+        } else if (arg == L"--cpu-transfer")
+            options.cpu_transfer = true;
         else if (arg == L"--workspace" && i + 1 < count && options.workspace.empty())
             options.workspace = argv[++i];
         else
-            throw std::invalid_argument("Use --smoke and/or --workspace <directory>");
+            throw std::invalid_argument(
+                "Use --smoke, --profile, --cpu-transfer, and/or --workspace <directory>");
     }
     return options;
 }

@@ -51,8 +51,9 @@ struct Runner::Wake {
             throw std::system_error(error, std::system_category(), "Wait for worker deadline");
     }
 };
-Runner::Runner(bool prefer_gpu, SessionStates initial, bool initial_volume, std::function<void()> notify)
-    : wake(std::make_unique<Wake>()), notify_frame(std::move(notify)) {
+Runner::Runner(bool prefer_gpu, SessionStates initial, bool initial_volume, std::function<void()> notify,
+               std::shared_ptr<GpuContext> display)
+    : wake(std::make_unique<Wake>()), display_context(std::move(display)), notify_frame(std::move(notify)) {
     use_gpu = prefer_gpu;
     volume = initial_volume;
     worker = std::thread([this, initial = std::move(initial)]() mutable {
@@ -95,7 +96,7 @@ void Runner::enqueue(std::function<void()> f) {
 }
 std::unique_ptr<Solver> Runner::create(State s) {
     if (use_gpu)
-        return std::make_unique<GpuSolver>(std::move(s));
+        return std::make_unique<GpuSolver>(std::move(s), display_context);
     return std::make_unique<CpuSolver>(std::move(s));
 }
 void Runner::play(bool b) {
@@ -151,7 +152,7 @@ void Runner::backend(bool gpu) {
             if (sessions[i]) {
                 auto s = sessions[i]->snapshot();
                 if (gpu)
-                    next[i] = std::make_unique<GpuSolver>(std::move(s));
+                    next[i] = std::make_unique<GpuSolver>(std::move(s), display_context);
                 else
                     next[i] = std::make_unique<CpuSolver>(std::move(s));
             }
@@ -188,24 +189,32 @@ void Runner::load(std::string path) {
         set_message("Loaded " + path);
     });
 }
-SessionSnapshot Runner::session_snapshot() const {
-    std::lock_guard<std::mutex> lock(mutex);
+SessionSnapshot Runner::snapshot_sessions_now() {
+    // Worker only: exact, ordered capture on demand, independent of display leases.
     SessionSnapshot result;
+    result.volume = volume;
     for (int i = 0; i < 2; ++i)
-        if (published[i])
-            result.states[i] = std::shared_ptr<const State>(published[i], &published[i]->state);
-    if (latest)
-        result.volume = latest->state.config.depth > 1;
+        if (sessions[i])
+            result.states[i] = std::make_shared<State>(sessions[i]->snapshot());
     return result;
 }
+std::future<SessionSnapshot> Runner::snapshot_sessions() {
+    return capture(false);
+}
 std::future<SessionSnapshot> Runner::pause_and_snapshot() {
+    return capture(true);
+}
+std::future<SessionSnapshot> Runner::capture(bool pause) {
     auto promise = std::make_shared<std::promise<SessionSnapshot>>();
     auto future = promise->get_future();
-    enqueue([this, promise] {
-        running = false;
+    enqueue([this, promise, pause] {
+        if (pause)
+            running = false;
         try {
-            publish();
-            promise->set_value(session_snapshot());
+            auto states = snapshot_sessions_now();
+            if (pause)
+                publish();
+            promise->set_value(std::move(states));
         } catch (...) {
             promise->set_exception(std::current_exception());
         }
@@ -215,10 +224,21 @@ std::future<SessionSnapshot> Runner::pause_and_snapshot() {
 void Runner::publish(int index) {
     if (index < 0)
         index = volume;
+    auto started = std::chrono::steady_clock::now();
     auto f = std::make_shared<Frame>();
-    f->state = sessions[index]->snapshot();
+    if (use_gpu && display_context) {
+        f->gpu_image = static_cast<GpuSolver *>(sessions[index].get())->display_snapshot();
+        if (!f->gpu_image)
+            return; // Bounded latest-frame delivery; never skip a numerical step.
+        f->state = f->gpu_image->metadata;
+        f->measures = f->gpu_image->measures;
+    } else {
+        f->state = sessions[index]->snapshot();
+        f->measures = measure(f->state.values);
+    }
     f->timings = sessions[index]->timings();
-    f->measures = measure(f->state.values);
+    f->publication_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     f->serial = ++serial;
     f->generation = generation;
     f->running = running && index == int(volume);
@@ -226,7 +246,6 @@ void Runner::publish(int index) {
     f->steps_per_second = running ? measured_rate : 0;
     {
         std::lock_guard<std::mutex> lock(mutex);
-        published[index] = f;
         if (index == int(volume))
             latest = std::move(f);
     }

@@ -60,7 +60,9 @@ const std::vector<std::string> &Renderer::palette_names() {
     }();
     return names;
 }
-Renderer::Renderer(ID3D11Device *d, ID3D11DeviceContext *c) : device(d), context(c) {
+Renderer::Renderer(ID3D11Device *d, ID3D11DeviceContext *c) : Renderer(std::make_shared<GpuContext>(d, c)) {}
+Renderer::Renderer(std::shared_ptr<GpuContext> shared)
+    : gpu(std::move(shared)), device(gpu->device), context(gpu->context) {
     auto vs = compile_shader(source, "vs", "vs_5_0"), ps = compile_shader(source, "ps", "ps_5_0");
     check(device->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &vertex),
           "Create viewport vertex shader");
@@ -84,7 +86,28 @@ Renderer::Renderer(ID3D11Device *d, ID3D11DeviceContext *c) : device(d), context
     rd.DepthClipEnable = TRUE;
     check(device->CreateRasterizerState(&rd, &rasterizer), "Create rasterizer");
 }
+void Renderer::use_gpu_image(std::shared_ptr<const GpuImage> image) {
+    if (!image)
+        throw std::invalid_argument("Missing GPU display image");
+    ComPtr<ID3D11Device> owner;
+    image->texture->GetDevice(&owner);
+    if (owner.Get() != device.Get())
+        throw std::invalid_argument("Display image belongs to another device");
+    displayed = std::move(image);
+    field_view = displayed->view;
+    config = displayed->metadata.config;
+    available = true;
+}
 void Renderer::upload(const State &s) {
+    if (s.values.size() != s.config.count())
+        throw std::invalid_argument("Incomplete display field");
+    auto lock = gpu->lock();
+    if (displayed) {
+        displayed.reset();
+        field.Reset();
+        field_view.Reset();
+    }
+
     const auto &c = s.config;
     if (!field || config.width != c.width || config.height != c.height || config.depth != c.depth) {
         field.Reset();
@@ -154,6 +177,7 @@ void Renderer::update_palette(int id) {
     palette_id = id;
 }
 ID3D11ShaderResourceView *Renderer::draw(const ViewSettings &v, int w, int h) {
+    auto lock = gpu->lock();
     w = std::clamp(w, 1, 4096);
     h = std::clamp(h, 1, 4096);
     if (!target || w != width || h != height) {
@@ -234,6 +258,7 @@ ID3D11ShaderResourceView *Renderer::draw(const ViewSettings &v, int w, int h) {
     return image.Get();
 }
 void Renderer::export_bmp(const std::string &path) {
+    auto lock = gpu->lock();
     if (!target)
         throw std::runtime_error("No rendered image");
     D3D11_TEXTURE2D_DESC d{};

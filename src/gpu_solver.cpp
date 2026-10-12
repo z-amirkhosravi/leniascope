@@ -11,6 +11,25 @@ cbuffer Params : register(b0) { uint W,H,D,axis; uint inverse,rule,count,pad; fl
 RWStructuredBuffer<float2> data : register(u0);
 RWTexture3D<float> field : register(u1);
 StructuredBuffer<float2> kernel : register(t0);
+RWStructuredBuffer<float4> statistics : register(u2);
+groupshared float4 totals[256];
+float4 combine(float4 a,float4 b){return float4(a.x+b.x,min(a.y,b.y),max(a.z,b.z),0);}
+[numthreads(256,1,1)] void reduce_field(uint3 group:SV_GroupID,uint tid:SV_GroupIndex){
+ float4 v=float4(0,1,0,0);
+ for(uint i=group.x*256+tid;i<count;i+=256*1024){
+   float a=field[uint3(i%W,(i/W)%H,i/(W*H))];v=combine(v,float4(a,a,a,0));
+ }
+ totals[tid]=v;GroupMemoryBarrierWithGroupSync();
+ for(uint stride=128;stride>0;stride>>=1){if(tid<stride)totals[tid]=combine(totals[tid],totals[tid+stride]);GroupMemoryBarrierWithGroupSync();}
+ if(tid==0)statistics[group.x]=totals[0];
+}
+[numthreads(256,1,1)] void reduce_totals(uint tid:SV_GroupIndex){
+ float4 v=float4(0,1,0,0);
+ for(uint i=tid;i<1024;i+=256)v=combine(v,statistics[i]);
+ totals[tid]=v;GroupMemoryBarrierWithGroupSync();
+ for(uint stride=128;stride>0;stride>>=1){if(tid<stride)totals[tid]=combine(totals[tid],totals[tid+stride]);GroupMemoryBarrierWithGroupSync();}
+ if(tid==0)statistics[0]=float4(totals[0].x/count,totals[0].yz,0);
+}
 groupshared float2 fftLine[2048];
 float2 mul(float2 a,float2 b){return float2(a.x*b.x-a.y*b.y,a.x*b.y+a.y*b.x);}
 uint address(uint row,uint i){if(axis==0)return row*W+i;if(axis==1)return (row/W)*W*H+i*W+row%W;return i*W*H+row;}
@@ -38,7 +57,12 @@ struct Params {
 };
 } // namespace
 struct GpuSolver::Impl {
+    std::shared_ptr<GpuContext> gpu;
     State state;
+    std::vector<std::shared_ptr<GpuImage>> images;
+    ComPtr<ID3D11Buffer> statistics, statistics_staging;
+    ComPtr<ID3D11UnorderedAccessView> statistics_uav;
+    ComPtr<ID3D11ComputeShader> reduce_field_shader, reduce_totals_shader;
     Timings timing;
     std::string adapter;
     ComPtr<ID3D11Device> device;
@@ -59,14 +83,17 @@ struct GpuSolver::Impl {
         if (completion)
             CloseHandle(completion);
     }
-    explicit Impl(State s) : state(std::move(s)) {
+    explicit Impl(State s, std::shared_ptr<GpuContext> shared)
+        : gpu(shared ? std::move(shared) : std::make_shared<GpuContext>()), state(std::move(s)) {
         state.config.validate();
         if (state.values.size() != state.config.count())
             throw std::invalid_argument("GPU state size mismatch");
         for (double v : state.values)
             if (!std::isfinite(v) || v < 0 || v > 1)
                 throw std::invalid_argument("Invalid GPU state");
-        make_device(device, ctx, &adapter);
+        device = gpu->device;
+        ctx = gpu->context;
+        adapter = gpu->adapter;
         state.backend = "GPU float / DirectCompute FFT-1 / " + adapter;
         auto shader = [&](const char *entry, ComPtr<ID3D11ComputeShader> &target) {
             auto code = compile_shader(compute_source, entry, "cs_5_0");
@@ -78,6 +105,8 @@ struct GpuSolver::Impl {
         shader("multiply", multiply_shader);
         shader("update", update_shader);
         shader("pack", pack_shader);
+        shader("reduce_field", reduce_field_shader);
+        shader("reduce_totals", reduce_totals_shader);
         const auto &c = state.config;
         D3D11_BUFFER_DESC bd{};
         bd.ByteWidth = UINT(c.count() * 8);
@@ -128,6 +157,21 @@ struct GpuSolver::Impl {
                 throw std::runtime_error("Create GPU completion event failed");
         }
     }
+    void complete(std::unique_lock<std::recursive_mutex> &lock) {
+        if (!fence) {
+            ctx->Flush();
+            return;
+        }
+        ++fence_value;
+        check(context4->Signal(fence.Get(), fence_value), "Signal GPU completion");
+        check(fence->SetEventOnCompletion(fence_value, completion), "Arm GPU completion event");
+        ctx->Flush();
+        lock.unlock();
+        auto result = WaitForSingleObject(completion, 10000);
+        lock.lock();
+        if (result != WAIT_OBJECT_0)
+            throw std::runtime_error("GPU completion timed out");
+    }
     void update_params() {
         const auto &c = state.config;
         params = {uint32_t(c.width),
@@ -174,6 +218,7 @@ struct GpuSolver::Impl {
         std::vector<float> pairs(k.size() * 2);
         for (size_t i = 0; i < k.size(); ++i)
             pairs[2 * i] = float(k[i]);
+        auto lock = gpu->lock();
         ctx->UpdateSubresource(data.Get(), 0, nullptr, pairs.data(), 0, 0);
         bind();
         transform(false);
@@ -181,10 +226,12 @@ struct GpuSolver::Impl {
         ctx->CopyResource(kernel.Get(), data.Get());
     }
 };
-GpuSolver::GpuSolver(State s) : impl(std::make_unique<Impl>(std::move(s))) {}
+GpuSolver::GpuSolver(State s, std::shared_ptr<GpuContext> gpu)
+    : impl(std::make_unique<Impl>(std::move(s), std::move(gpu))) {}
 GpuSolver::~GpuSolver() = default;
 void GpuSolver::step() {
     auto &p = *impl;
+    auto lock = p.gpu->lock();
     p.ctx->Begin(p.disjoint.Get());
     p.ctx->End(p.timestamp_begin.Get());
     p.bind();
@@ -198,16 +245,8 @@ void GpuSolver::step() {
     p.unbind();
     p.ctx->End(p.timestamp_end.Get());
     p.ctx->End(p.disjoint.Get());
-    // Bound queued GPU work; the worker waits, leaving the UI device independent.
-    if (p.fence) {
-        ++p.fence_value;
-        check(p.context4->Signal(p.fence.Get(), p.fence_value), "Signal GPU completion");
-        check(p.fence->SetEventOnCompletion(p.fence_value, p.completion), "Arm GPU completion event");
-        p.ctx->Flush();
-        if (WaitForSingleObject(p.completion, 10000) != WAIT_OBJECT_0)
-            throw std::runtime_error("GPU completion timed out");
-    } else
-        p.ctx->Flush();
+    // Submit one bounded compute batch, then let the UI submit while the GPU runs.
+    p.complete(lock);
     D3D11_QUERY_DATA_TIMESTAMP_DISJOINT clock{};
     auto wait_start = std::chrono::steady_clock::now();
     HRESULT ready;
@@ -215,7 +254,9 @@ void GpuSolver::step() {
            S_FALSE) {
         if (std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(10))
             throw std::runtime_error("GPU query timed out");
+        lock.unlock();
         SwitchToThread();
+        lock.lock();
     }
     check(ready, "Read GPU clock");
     UINT64 a = 0, b = 0;
@@ -230,10 +271,13 @@ State GpuSolver::snapshot() {
     auto &p = *impl;
     State s = p.state;
     s.values.resize(s.config.count());
+    auto lock = p.gpu->lock();
     p.ctx->CopyResource(p.staging.Get(), p.field.Get());
+    p.complete(lock);
     D3D11_MAPPED_SUBRESOURCE m{};
     check(p.ctx->Map(p.staging.Get(), 0, D3D11_MAP_READ, 0, &m), "Read GPU state");
     const auto &c = s.config;
+    lock.unlock(); // Converting mapped read-only memory does not use the context.
     for (int z = 0; z < c.depth; ++z)
         for (int y = 0; y < c.height; ++y) {
             auto row = reinterpret_cast<const float *>(static_cast<const char *>(m.pData) +
@@ -241,8 +285,70 @@ State GpuSolver::snapshot() {
             for (int x = 0; x < c.width; ++x)
                 s.values[(size_t(z) * c.height + y) * c.width + x] = row[x];
         }
+    lock.lock();
     p.ctx->Unmap(p.staging.Get(), 0);
     return s;
+}
+std::shared_ptr<const GpuImage> GpuSolver::display_snapshot() {
+    auto &p = *impl;
+    std::shared_ptr<GpuImage> image;
+    for (auto &candidate : p.images)
+        if (candidate.use_count() == 1) {
+            image = candidate;
+            break;
+        }
+    if (!image) {
+        if (p.images.size() == 3)
+            return {};
+        image = std::make_shared<GpuImage>();
+        D3D11_TEXTURE3D_DESC d{};
+        p.field->GetDesc(&d);
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        check(p.device->CreateTexture3D(&d, nullptr, &image->texture), "Create GPU display snapshot");
+        check(p.device->CreateShaderResourceView(image->texture.Get(), nullptr, &image->view),
+              "Create GPU display view");
+        p.images.push_back(image);
+    }
+    if (!p.statistics) {
+        ComPtr<ID3D11Buffer> statistics, staging;
+        ComPtr<ID3D11UnorderedAccessView> view;
+        D3D11_BUFFER_DESC d{};
+        d.ByteWidth = 1024 * 16;
+        d.Usage = D3D11_USAGE_DEFAULT;
+        d.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+        d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        d.StructureByteStride = 16;
+        check(p.device->CreateBuffer(&d, nullptr, &statistics), "Create GPU statistics");
+        check(p.device->CreateUnorderedAccessView(statistics.Get(), nullptr, &view), "Create statistics UAV");
+        d = {};
+        d.ByteWidth = 16;
+        d.Usage = D3D11_USAGE_STAGING;
+        d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        check(p.device->CreateBuffer(&d, nullptr, &staging), "Create statistics readback");
+        p.statistics = std::move(statistics);
+        p.statistics_staging = std::move(staging);
+        p.statistics_uav = std::move(view);
+    }
+    image->metadata = p.state;
+    auto lock = p.gpu->lock();
+    p.ctx->CopyResource(image->texture.Get(), p.field.Get());
+    p.bind();
+    ID3D11UnorderedAccessView *stats = p.statistics_uav.Get();
+    p.ctx->CSSetUnorderedAccessViews(2, 1, &stats, nullptr);
+    p.dispatch(p.reduce_field_shader.Get(), 1024);
+    p.dispatch(p.reduce_totals_shader.Get(), 1);
+    stats = nullptr;
+    p.ctx->CSSetUnorderedAccessViews(2, 1, &stats, nullptr);
+    p.unbind();
+    D3D11_BOX box{0, 0, 0, 16, 1, 1};
+    p.ctx->CopySubresourceRegion(p.statistics_staging.Get(), 0, 0, 0, 0, p.statistics.Get(), 0, &box);
+    p.complete(lock);
+    D3D11_MAPPED_SUBRESOURCE m{};
+    check(p.ctx->Map(p.statistics_staging.Get(), 0, D3D11_MAP_READ, 0, &m), "Read GPU statistics");
+    const auto *v = static_cast<const float *>(m.pData);
+    image->measures = {v[0], v[1], v[2], 0};
+    p.ctx->Unmap(p.statistics_staging.Get(), 0);
+    return image;
 }
 void GpuSolver::parameters(const Config &c) {
     c.validate();

@@ -7,8 +7,12 @@
 #include <mutex>
 #include <thread>
 namespace lenia {
+struct GpuContext;
+struct GpuImage;
 struct Frame {
-    State state;
+    State state; // Values are empty when gpu_image supplies a GPU-resident display.
+    std::shared_ptr<const GpuImage> gpu_image;
+    double publication_ms = 0;
     Timings timings;
     Measures measures;
     uint64_t serial = 0, generation = 0;
@@ -18,7 +22,8 @@ struct Frame {
 class Runner {
   public:
     explicit Runner(bool prefer_gpu = true, SessionStates initial = {}, bool initial_volume = true,
-                    std::function<void()> notify_frame = {});
+                    std::function<void()> notify_frame = {},
+                    std::shared_ptr<GpuContext> display_context = {});
     ~Runner();
     Runner(const Runner &) = delete;
     Runner &operator=(const Runner &) = delete;
@@ -33,13 +38,15 @@ class Runner {
     void speed(double steps_per_second);
     void save(std::string);
     void load(std::string);
-    SessionSnapshot session_snapshot() const;
+    std::future<SessionSnapshot> snapshot_sessions();
     std::future<SessionSnapshot> pause_and_snapshot();
 
   private:
     void enqueue(std::function<void()>);
     void loop(SessionStates);
     void publish(int index = -1);
+    SessionSnapshot snapshot_sessions_now();
+    std::future<SessionSnapshot> capture(bool pause);
     void set_message(std::string);
     std::unique_ptr<Solver> create(State);
     mutable std::mutex mutex;
@@ -49,7 +56,7 @@ class Runner {
     bool stopping = false, finished = false;
     std::thread worker;
     std::shared_ptr<const Frame> latest;
-    std::array<std::shared_ptr<const Frame>, 2> published;
+    std::shared_ptr<GpuContext> display_context;
     std::function<void()> notify_frame;
     std::string status = "Starting simulation...";
     // Fields below are accessed only by the worker.

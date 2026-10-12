@@ -4,7 +4,7 @@
 #include <string>
 namespace lenia {
 struct StartupOptions {
-    bool smoke = false;
+    bool smoke = false, profile = false, cpu_transfer = false;
     std::filesystem::path workspace;
 };
 StartupOptions startup_options();

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <commdlg.h>
+#include <dxgi1_3.h>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -201,26 +202,33 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                                 1440, 940, nullptr, nullptr, instance, nullptr);
     if (!window)
         throw std::runtime_error("Cannot create window");
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    std::string adapter;
-    make_device(device, context, &adapter);
+    auto gpu_context = std::make_shared<GpuContext>();
+    auto device = gpu_context->device;
+    auto context = gpu_context->context;
+    auto adapter = gpu_context->adapter;
     ComPtr<IDXGIDevice> dxgi_device;
     device.As(&dxgi_device);
     ComPtr<IDXGIAdapter> dxgi_adapter;
     dxgi_device->GetAdapter(&dxgi_adapter);
-    ComPtr<IDXGIFactory> factory;
-    dxgi_adapter->GetParent(IID_PPV_ARGS(&factory));
-    DXGI_SWAP_CHAIN_DESC desc{};
+    ComPtr<IDXGIFactory2> factory;
+    check(dxgi_adapter->GetParent(IID_PPV_ARGS(&factory)), "Get swap chain factory");
+    DXGI_SWAP_CHAIN_DESC1 desc{};
     desc.BufferCount = 2;
-    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    desc.OutputWindow = window;
     desc.SampleDesc.Count = 1;
-    desc.Windowed = TRUE;
-    desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-    ComPtr<IDXGISwapChain> swap;
-    check(factory->CreateSwapChain(device.Get(), &desc, &swap), "Create swap chain");
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    ComPtr<IDXGISwapChain1> swap1;
+    check(factory->CreateSwapChainForHwnd(device.Get(), window, &desc, nullptr, nullptr, &swap1),
+          "Create swap chain");
+    ComPtr<IDXGISwapChain2> swap;
+    check(swap1.As(&swap), "Get presentation pacing interface");
+    check(swap->SetMaximumFrameLatency(1), "Set presentation latency");
+    std::unique_ptr<void, decltype(&CloseHandle)> frame_ready(swap->GetFrameLatencyWaitableObject(),
+                                                              CloseHandle);
+    if (!frame_ready)
+        throw std::runtime_error("Presentation wait handle is unavailable");
     factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
     ComPtr<ID3D11RenderTargetView> screen;
     auto make_target = [&] {
@@ -245,9 +253,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17 * dpi);
     ImGui_ImplWin32_Init(window);
     ImGui_ImplDX11_Init(device.Get(), context.Get());
-    Renderer renderer(device.Get(), context.Get());
-    Runner runner(preferences.gpu, std::move(restored.states), preferences.volume,
-                  [window] { PostMessageW(window, WM_APP + 1, 0, 0); });
+    Renderer renderer(gpu_context);
+    Runner runner(
+        preferences.gpu, std::move(restored.states), preferences.volume,
+        [window] { PostMessageW(window, WM_APP + 1, 0, 0); }, options.cpu_transfer ? nullptr : gpu_context);
     runner.speed(preferences.steps_per_second);
     auto &views = preferences.views;
     bool done = false, dirty_config = false;
@@ -258,7 +267,17 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     std::string local_message = restored.message, previous_local_message;
     auto local_message_until = std::chrono::steady_clock::now();
     int smoke_frames = 0;
-    bool smoke_exported = false;
+    bool smoke_exported = false, profile_started = false;
+    struct ProfileRow {
+        double elapsed, interval, compute, preparation, draw_submit, present;
+        uint64_t step;
+        bool gpu;
+    };
+    std::vector<ProfileRow> profile;
+    auto profile_start = std::chrono::steady_clock::now(), profile_previous = profile_start;
+    auto milliseconds = [](auto a, auto b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
     std::vector<float> history;
     uint64_t history_step = UINT64_MAX;
     bool history_volume = true;
@@ -268,9 +287,20 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     uint64_t acknowledged_checkpoints = 0;
     int closing_stage = 0;
     std::future<SessionSnapshot> closing_snapshot;
+    std::future<SessionSnapshot> recovery_snapshot;
     std::optional<SessionSnapshot> closing_sessions;
     std::string closing_error;
     auto persist_workspace = [&](const std::shared_ptr<const Frame> &frame) {
+        if (recovery_snapshot.valid() &&
+            recovery_snapshot.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            try {
+                auto snapshot = recovery_snapshot.get();
+                if (writer && !close_requested && preferences.recovery)
+                    writer->request(preferences, std::move(snapshot));
+            } catch (const std::exception &e) {
+                local_message = e.what();
+            }
+        }
         if (!close_requested) {
             preferences.steps_per_second = rate;
             if (frame) {
@@ -293,9 +323,9 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                     auto encoded = encode_preferences(preferences);
                     bool recover = preferences.recovery && now >= next_recovery;
                     if (recover || (encoded != sent_preferences && now >= next_preferences)) {
-                        writer->request(preferences,
-                                        recover ? std::optional<SessionSnapshot>(runner.session_snapshot())
-                                                : std::nullopt);
+                        writer->request(preferences);
+                        if (recover && !recovery_snapshot.valid())
+                            recovery_snapshot = runner.snapshot_sessions();
                         sent_preferences = std::move(encoded);
                         next_preferences = now + std::chrono::seconds(2);
                         if (recover)
@@ -321,14 +351,20 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             break;
         auto frame = runner.frame();
         persist_workspace(frame);
+        if (options.profile && frame && !profile_started) {
+            runner.play(true);
+            profile_started = true;
+            profile_start = profile_previous = std::chrono::steady_clock::now();
+        }
         if (minimized && !close_requested) {
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
             continue;
         }
         if (pending_width && pending_height) {
+            auto lock = gpu_context->lock();
             context->OMSetRenderTargets(0, nullptr, nullptr);
             screen.Reset();
-            check(swap->ResizeBuffers(0, pending_width, pending_height, DXGI_FORMAT_UNKNOWN, 0),
+            check(swap->ResizeBuffers(0, pending_width, pending_height, DXGI_FORMAT_UNKNOWN, desc.Flags),
                   "Resize window");
             pending_width = pending_height = 0;
             make_target();
@@ -336,6 +372,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         if (requested_dpi > 0 && requested_dpi != dpi) {
             dpi = requested_dpi;
             style(dpi);
+            auto lock = gpu_context->lock();
             ImGui_ImplDX11_InvalidateDeviceObjects();
             io.Fonts->Clear();
             io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17 * dpi);
@@ -374,6 +411,17 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         }
         if (smoke && closing_stage == 3)
             throw std::runtime_error(closing_error);
+        // Wait before acquiring the context: simulation can submit freely during vertical blank.
+        // Message wakeups keep controls and worker notifications responsive while waiting.
+        if (!minimized) {
+            HANDLE ready = frame_ready.get();
+            auto wait = MsgWaitForMultipleObjectsEx(1, &ready, 1000, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if (wait == WAIT_FAILED)
+                throw std::runtime_error("Presentation wait failed");
+            if (wait != WAIT_OBJECT_0)
+                continue;
+        }
+        frame = runner.frame(); // Fetch the newest completed step after the presentation wait.
         bool is_volume = frame ? frame->state.config.depth > 1 : true;
         auto &view = views[is_volume];
         if (frame && frame->serial != shown) {
@@ -387,7 +435,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 history_step = frame->state.steps;
                 history_volume = is_volume;
             }
-            renderer.upload(frame->state);
+            if (frame->gpu_image)
+                renderer.use_gpu_image(frame->gpu_image);
+            else
+                renderer.upload(frame->state);
             if (shown_generation != frame->generation || edit.width != frame->state.config.width ||
                 edit.depth != frame->state.config.depth) {
                 dirty_config = false;
@@ -399,7 +450,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             shown = frame->serial;
             shown_generation = frame->generation;
         }
-        ImGui_ImplDX11_NewFrame();
+        {
+            auto lock = gpu_context->lock();
+            ImGui_ImplDX11_NewFrame();
+        }
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
         const auto display = io.DisplaySize;
@@ -579,11 +633,9 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 if (ImGui::Button(preferences.recovery ? "Save workspace now" : "Save preferences now",
                                   {-1, 0}) &&
                     writer) {
-                    auto snapshot = runner.session_snapshot();
-                    preferences.volume = snapshot.volume;
-                    writer->request(preferences, preferences.recovery
-                                                     ? std::optional<SessionSnapshot>(snapshot)
-                                                     : std::nullopt);
+                    writer->request(preferences);
+                    if (preferences.recovery && !recovery_snapshot.valid())
+                        recovery_snapshot = runner.snapshot_sessions();
                     next_recovery = std::chrono::steady_clock::now() + std::chrono::seconds(30);
                 }
                 ImGui::EndDisabled();
@@ -606,9 +658,11 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         } else
             ImGui::Text("Preparing simulation...");
         ImVec2 image_size = ImGui::GetContentRegionAvail();
-        image_size.y = std::max(1.f, image_size.y - 98 * dpi);
+        image_size.y = std::max(1.f, image_size.y - 118 * dpi);
         image_size.x = std::max(1.f, image_size.x);
+        auto draw_start = std::chrono::steady_clock::now();
         auto image = renderer.draw(view, int(image_size.x), int(image_size.y));
+        double draw_submit_ms = milliseconds(draw_start, std::chrono::steady_clock::now());
         ImVec2 image_origin = ImGui::GetCursorScreenPos();
         ImGui::Image((ImTextureID)(intptr_t)image, image_size);
         if (frame && is_volume && view.view != 0)
@@ -626,6 +680,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         if (frame) {
             ImGui::Text("%.1f steps/s    %.2f ms compute    %.0f display fps", frame->steps_per_second,
                         frame->timings.total_ms, io.Framerate);
+            ImGui::TextDisabled("%.2f ms display preparation    %s", frame->publication_ms,
+                                frame->gpu_image ? "GPU resident" : "CPU transfer");
             ImGui::TextDisabled("Mean %.5f    range [%.4f, %.4f]    %s", frame->measures.mean,
                                 frame->measures.minimum, frame->measures.maximum,
                                 frame->gpu ? "GPU float" : "CPU double");
@@ -675,30 +731,62 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         }
         ImGui::End();
         ImGui::Render();
-        ID3D11RenderTargetView *rtv = screen.Get();
-        context->OMSetRenderTargets(1, &rtv, nullptr);
-        const float clear[] = {.04f, .05f, .07f, 1};
-        context->ClearRenderTargetView(screen.Get(), clear);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        if (smoke && frame && ++smoke_frames == 5) {
-            save_backbuffer(device.Get(), context.Get(), swap.Get(), "ui-smoke.bmp");
-            renderer.export_bmp("volume-smoke.bmp");
-            smoke_exported = true;
-            close_requested = true; // Exercise the ordinary pause, save, and close path too.
+        HRESULT present;
+        double present_ms = 0;
+        {
+            auto lock = gpu_context->lock();
+            ID3D11RenderTargetView *rtv = screen.Get();
+            context->OMSetRenderTargets(1, &rtv, nullptr);
+            const float clear[] = {.04f, .05f, .07f, 1};
+            context->ClearRenderTargetView(screen.Get(), clear);
+            ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+            if (smoke && frame && (!options.profile || frame->running) &&
+                ++smoke_frames == (options.profile ? 330 : 5)) {
+                save_backbuffer(device.Get(), context.Get(), swap.Get(), "ui-smoke.bmp");
+                renderer.export_bmp("volume-smoke.bmp");
+                smoke_exported = true;
+                close_requested = true; // Exercise the ordinary pause, save, and close path too.
+            }
+            auto present_start = std::chrono::steady_clock::now();
+            present = swap->Present(1, 0);
+            present_ms = milliseconds(present_start, std::chrono::steady_clock::now());
+            check(present, "Present frame");
         }
-        HRESULT present = swap->Present(1, 0);
-        check(present, "Present frame");
+        if (options.profile && frame && frame->running && !close_requested) {
+            auto now = std::chrono::steady_clock::now();
+            profile.push_back({milliseconds(profile_start, now), milliseconds(profile_previous, now),
+                               frame->timings.total_ms, frame->publication_ms, draw_submit_ms, present_ms,
+                               frame->state.steps, frame->gpu});
+            profile_previous = now;
+        }
         if (present == DXGI_STATUS_OCCLUDED)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (!frame || !frame->running)
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
+    }
+    if (options.profile) {
+        std::ofstream out("frame-profile.csv");
+        out << "elapsed_ms,interval_ms,compute_ms,publication_wall_ms,draw_submit_wall_ms,present_wall_ms,"
+               "step,backend\n";
+        // Discard startup/clock warm-up; rows describe actual GUI Present calls.
+        for (size_t i = 30; i < profile.size(); ++i) {
+            const auto &r = profile[i];
+            out << r.elapsed << ',' << r.interval << ',' << r.compute << ',' << r.preparation << ','
+                << r.draw_submit << ',' << r.present << ',' << r.step << ',' << (r.gpu ? "gpu" : "cpu")
+                << '\n';
+        }
+        if (!out)
+            throw std::runtime_error("Cannot write frame profile");
     }
     if (writer) {
         writer->flush();
         if (smoke && !writer->status().error.empty())
             throw std::runtime_error(writer->status().error);
     }
-    ImGui_ImplDX11_Shutdown();
+    {
+        auto lock = gpu_context->lock();
+        ImGui_ImplDX11_Shutdown();
+    }
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
     DestroyWindow(window);
@@ -711,7 +799,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command, int show) {
         return run(instance, show, startup_options());
     } catch (const std::exception &e) {
         std::ofstream("leniascope-error.log") << e.what();
-        if (!std::wcsstr(command, L"--smoke"))
+        if (!std::wcsstr(command, L"--smoke") && !std::wcsstr(command, L"--profile"))
             MessageBoxA(nullptr, e.what(), "Leniascope", MB_ICONERROR);
         return 1;
     }

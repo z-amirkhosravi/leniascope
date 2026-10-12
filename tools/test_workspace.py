@@ -9,6 +9,7 @@ import sys
 import tempfile
 
 gui, cli = (Path(arg).resolve() for arg in sys.argv[1:3])
+gpu = "--gpu" in sys.argv[3:]
 
 def native(path):
     if sys.platform == "linux" and gui.suffix.lower() == ".exe":
@@ -31,11 +32,12 @@ with tempfile.TemporaryDirectory(prefix="leniascope-gui-workspace-") as temporar
         file = slot / f"field-{dimension}d.lenia"
         subprocess.run([str(cli), "run", "--dimensions", str(dimension), "--size", "16",
                         "--radius", "3", "--seed", str(100 + dimension), "--steps", "7",
+                        "--backend", "gpu" if gpu else "cpu",
                         "--output", native(file)], check=True, capture_output=True)
         originals.append(file.read_bytes())
     (slot / "complete.txt").write_text(
         f"LeniascopeRecovery 1\n1 1 1 0 {checksum(originals[0])} {checksum(originals[1])}\n")
-    settings = ("LeniascopeWorkspace 1\n75 0 0 1 980 680 0\n"
+    settings = (f"LeniascopeWorkspace 1\n75 {int(gpu)} 0 1 980 680 0\n"
                 "0 2 3 0.3 0.65 0.3 1.9 2 0.02 1 0.75 2 0.1 0.2 0.3\n"
                 "2 1 20 0.6 -1.2 0.4 2.5 3 0.15 0.8 0.5 1 0.2 0.3 0.4\n")
     (profile / "preferences.txt").write_text(settings)
@@ -56,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="leniascope-gui-workspace-") as temporar
             assert str(checksum(saved)) == manifest[6+i]
         rows = (profile / "preferences.txt").read_text().splitlines()
         controls = rows[1].split()
-        assert controls[:4] == ["75", "0", "0", "1"]
+        assert controls[:4] == ["75", str(int(gpu)), "0", "1"]
         for actual, expected in zip(rows[2:], settings.splitlines()[2:]):
             assert all(abs(float(a)-float(b)) < 1e-6 for a, b in zip(actual.split(), expected.split()))
-    print("PASS GUI repeated restart: both paused fields, camera/palettes/rate, recovery rotation, graceful close")
+    print(f"PASS {'GPU' if gpu else 'CPU'} GUI repeated restart: both paused fields, camera/palettes/rate, recovery rotation, graceful close")

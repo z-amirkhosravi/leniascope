@@ -35,6 +35,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="render_tests.cpp" />
+    <ClCompile Include="..\src\gpu_solver.cpp" />
+    <ClCompile Include="..\src\runner.cpp" />
     <ClCompile Include="..\src\renderer.cpp" />
     <ClCompile Include="..\cmap.cpp" /><ClCompile Include="..\src\simulation.cpp" />
   </ItemGroup>

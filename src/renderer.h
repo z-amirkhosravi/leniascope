@@ -1,17 +1,22 @@
 #pragma once
 #include "d3d_support.h"
+#include "gpu_solver.h"
 #include "simulation.h"
 #include "view_settings.h"
 namespace lenia {
 class Renderer {
   public:
     Renderer(ID3D11Device *, ID3D11DeviceContext *);
+    explicit Renderer(std::shared_ptr<GpuContext>);
     static const std::vector<std::string> &palette_names();
     void upload(const State &);
+    void use_gpu_image(std::shared_ptr<const GpuImage>);
     ID3D11ShaderResourceView *draw(const ViewSettings &, int width, int height);
     void export_bmp(const std::string &path);
 
   private:
+    std::shared_ptr<GpuContext> gpu;
+    std::shared_ptr<const GpuImage> displayed;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11Texture3D> field;

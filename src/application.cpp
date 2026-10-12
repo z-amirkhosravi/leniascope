@@ -2,6 +2,7 @@
 #include "backends/imgui_impl_dx11.h"
 #include "backends/imgui_impl_win32.h"
 #include "desktop_workspace.h"
+#include "gallery_panel.h"
 #include "imgui.h"
 #include "renderer.h"
 #include "runner.h"
@@ -88,6 +89,9 @@ void style(float scale) {
     s.ItemSpacing = {10, 9};
     s.WindowPadding = {18, 16};
     s.Colors[ImGuiCol_WindowBg] = {.055f, .069f, .09f, 1};
+    s.Colors[ImGuiCol_PopupBg] = s.Colors[ImGuiCol_WindowBg];
+    s.Colors[ImGuiCol_TitleBgActive] = {.13f, .23f, .28f, 1};
+    s.Colors[ImGuiCol_ModalWindowDimBg] = {0, 0, 0, .6f};
     s.Colors[ImGuiCol_ChildBg] = {.073f, .088f, .11f, 1};
     s.Colors[ImGuiCol_FrameBg] = {.12f, .15f, .19f, 1};
     s.Colors[ImGuiCol_Button] = {.13f, .23f, .28f, 1};
@@ -264,6 +268,9 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         preferences.seeds, preferences.cuda);
     runner.speed(preferences.steps_per_second);
     auto &views = preferences.views;
+    GalleryPanel gallery(access ? access->directory / L"gallery" : std::filesystem::path{},
+                         access && access->writable(), gpu_context);
+    bool gallery_smoke_done = false;
     bool done = false, dirty_config = false;
     Config edit;
     uint64_t shown = 0, seed = 1, shown_generation = UINT64_MAX;
@@ -283,6 +290,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     auto profile_start = std::chrono::steady_clock::now(), profile_previous = profile_start;
     auto milliseconds = [](auto a, auto b) {
         return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    auto gallery_trace = [&](const char *event) {
+        if (options.gallery_smoke)
+            std::ofstream("gallery-smoke.log", std::ios::app) << GetTickCount64() << ' ' << event << '\n';
     };
     std::vector<float> history;
     uint64_t history_step = UINT64_MAX;
@@ -356,7 +367,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         }
         if (done)
             break;
+        gallery.tick(runner, views);
         auto frame = runner.frame();
+        if (options.gallery_smoke && frame && !gallery_smoke_done)
+            gallery_smoke_done = gallery.smoke(runner, views);
         persist_workspace(frame);
         if (options.profile && frame && !profile_started) {
             runner.play(true);
@@ -385,7 +399,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17 * dpi);
             requested_dpi = 0;
         }
-        if (close_requested && closing_stage == 0) {
+        if (close_requested && closing_stage == 0 && !gallery.busy()) {
+            gallery_trace("close: capturing workspace");
             try {
                 closing_snapshot = runner.pause_and_snapshot();
                 closing_stage = 1;
@@ -398,6 +413,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             closing_snapshot.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             try {
                 closing_sessions = closing_snapshot.get();
+                gallery_trace("close: writing workspace");
                 preferences.volume = closing_sessions->volume;
                 preferences.steps_per_second = rate;
                 if (auto final_frame = runner.frame()) {
@@ -412,8 +428,12 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 closing_stage = 3;
             }
         }
-        if (closing_stage == 2 && (!writer || !writer->status().busy)) {
+        if (closing_stage == 2 && !gallery.busy() && (!writer || !writer->status().busy)) {
             closing_error = writer ? writer->status().error : std::string();
+            if (closing_error.empty())
+                closing_error = gallery.close_error();
+            if (closing_error.empty())
+                gallery_trace("close: workspace ready");
             if (closing_error.empty())
                 break;
             closing_stage = 3;
@@ -484,7 +504,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         ImGui::BeginDisabled(close_requested || !frame);
         try {
             if (ImGui::Button(frame && frame->running ? "Pause" : "Play", {88 * dpi, 0}) ||
-                (frame && !close_requested && ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
+                (frame && !close_requested && !gallery.active() && ImGui::IsKeyPressed(ImGuiKey_Space) &&
+                 !io.WantTextInput))
                 runner.play(!(frame && frame->running));
             ImGui::SameLine();
             if (ImGui::Button("Step"))
@@ -689,6 +710,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::TextDisabled("EXPERIMENT");
+            if (ImGui::Button("Pattern gallery", {-1, 0}))
+                gallery.open();
             if (ImGui::CollapsingHeader("Measurements")) {
                 if (!history.empty())
                     ImGui::PlotLines("##mean", history.data(), int(history.size()), 0, "Mean activity", 0,
@@ -809,6 +832,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             ImGui::TextWrapped("%s", closing_error.c_str());
             ImGui::TextWrapped("Existing complete recovery checkpoints have been preserved.");
             if (ImGui::Button("Retry")) {
+                gallery.retry_save();
                 closing_stage = 0;
                 ImGui::CloseCurrentPopup();
             }
@@ -816,6 +840,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             if (ImGui::Button("Keep open")) {
                 close_requested = false;
                 closing_stage = 0;
+                if (!gallery.close_error().empty())
+                    gallery.open();
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
@@ -824,6 +850,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             ImGui::EndPopup();
         }
         ImGui::End();
+        gallery.draw(runner, views, dpi, close_requested);
         ImGui::Render();
         HRESULT present;
         double present_ms = 0;
@@ -834,8 +861,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             const float clear[] = {.04f, .05f, .07f, 1};
             context->ClearRenderTargetView(screen.Get(), clear);
             ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-            if (smoke && frame && (!options.profile || frame->running) &&
-                ++smoke_frames == (options.profile ? 330 : 5)) {
+            if (smoke && frame && (!options.gallery_smoke || gallery_smoke_done) &&
+                (!options.profile || frame->running) && ++smoke_frames == (options.profile ? 330 : 5)) {
                 save_backbuffer(device.Get(), context.Get(), swap.Get(), "ui-smoke.bmp");
                 renderer.export_bmp("volume-smoke.bmp");
                 smoke_exported = true;
@@ -877,6 +904,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         if (smoke && !writer->status().error.empty())
             throw std::runtime_error(writer->status().error);
     }
+    gallery_trace("close: releasing UI");
     {
         auto lock = gpu_context->lock();
         ImGui_ImplDX11_Shutdown();
@@ -885,6 +913,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     ImGui::DestroyContext();
     DestroyWindow(window);
     UnregisterClassW(wc.lpszClassName, instance);
+    gallery_trace("close: releasing simulation");
     return smoke && !smoke_exported ? 1 : 0;
 }
 } // namespace
@@ -893,7 +922,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command, int show) {
         return run(instance, show, startup_options());
     } catch (const std::exception &e) {
         std::ofstream("leniascope-error.log") << e.what();
-        if (!std::wcsstr(command, L"--smoke") && !std::wcsstr(command, L"--profile"))
+        if (!std::wcsstr(command, L"--smoke") && !std::wcsstr(command, L"--gallery-smoke") &&
+            !std::wcsstr(command, L"--profile"))
             MessageBoxA(nullptr, e.what(), "Leniascope", MB_ICONERROR);
         return 1;
     }

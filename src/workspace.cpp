@@ -1,4 +1,5 @@
 #include "workspace.h"
+#include "file_integrity.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -72,21 +73,6 @@ void atomic_text(const fs::path &path, const std::string &text) {
         throw;
     }
 }
-uint64_t checksum(const fs::path &path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-        throw std::runtime_error("Recovery checkpoint is missing");
-    uint64_t hash = 14695981039346656037ULL;
-    std::array<char, 65536> buffer;
-    while (file.read(buffer.data(), buffer.size()) || file.gcount())
-        for (std::streamsize i = 0; i < file.gcount(); ++i) {
-            hash ^= static_cast<unsigned char>(buffer[size_t(i)]);
-            hash *= 1099511628211ULL;
-        }
-    if (file.bad())
-        throw std::runtime_error("Recovery checksum read failed");
-    return hash;
-}
 struct Manifest {
     uint64_t revision = 0, hashes[2]{};
     bool present[2]{}, volume = true;
@@ -124,7 +110,7 @@ void write_recovery(const fs::path &directory, const SessionSnapshot &s, uint64_
             throw std::runtime_error("Recovery session dimension mismatch");
         auto path = field_path(slot, i);
         save_state(*s.states[i], path.u8string());
-        hashes[i] = checksum(path);
+        hashes[i] = file_checksum(path);
     }
     std::ostringstream out;
     out << "LeniascopeRecovery 1\n"
@@ -224,7 +210,7 @@ static RestoredWorkspace read_workspace(const fs::path &directory, bool include_
                 if (!candidate.data.present[i])
                     continue;
                 auto path = field_path(candidate.slot, i);
-                if (checksum(path) != candidate.data.hashes[i])
+                if (file_checksum(path) != candidate.data.hashes[i])
                     throw std::runtime_error("Recovery checksum mismatch");
                 states[i] = std::make_shared<State>(load_state(path.u8string()));
                 if ((states[i]->config.depth > 1) != bool(i))

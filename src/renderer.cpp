@@ -257,7 +257,7 @@ ID3D11ShaderResourceView *Renderer::draw(const ViewSettings &v, int w, int h) {
     context->OMSetRenderTargets(0, nullptr, nullptr);
     return image.Get();
 }
-void Renderer::export_bmp(const std::string &path) {
+std::vector<uint8_t> Renderer::capture_bmp() {
     auto lock = gpu->lock();
     if (!target)
         throw std::runtime_error("No rendered image");
@@ -294,10 +294,17 @@ void Renderer::export_bmp(const std::string &path) {
     info.biPlanes = 1;
     info.biBitCount = 32;
     info.biCompression = BI_RGB;
+    std::vector<uint8_t> result(file.bfSize);
+    std::memcpy(result.data(), &file, sizeof file);
+    std::memcpy(result.data() + sizeof file, &info, sizeof info);
+    std::memcpy(result.data() + file.bfOffBits, bytes.data(), bytes.size());
+    return result;
+}
+void Renderer::export_bmp(const std::string &path) {
+    auto bytes = capture_bmp();
     std::ofstream out(std::filesystem::u8path(path), std::ios::binary);
-    out.write(reinterpret_cast<char *>(&file), sizeof file);
-    out.write(reinterpret_cast<char *>(&info), sizeof info);
-    out.write(reinterpret_cast<char *>(bytes.data()), bytes.size());
+    out.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    out.close();
     if (!out)
         throw std::runtime_error("Image export failed");
 }

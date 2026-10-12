@@ -14,6 +14,7 @@
 #include <thread>
 using namespace lenia;
 void workspace_tests();
+void gallery_tests(bool cpu_only);
 void numerical_tests(bool cpu_only);
 void require(bool b, const char *message) {
     if (!b)
@@ -68,6 +69,7 @@ int main(int argc, char **argv) {
         bool cpu_only = argc > 1 && std::string(argv[1]) == "--cpu-only";
         seed_tests();
         workspace_tests();
+        gallery_tests(cpu_only);
         numerical_tests(cpu_only);
         compare_convolution({8, 8, 1, 2});
         compare_convolution({16, 8, 1, 2});

@@ -35,6 +35,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="core_tests.cpp" />
+    <ClCompile Include="gallery_tests.cpp" />
+    <ClCompile Include="..\src\gallery.cpp" />
     <ClCompile Include="seed_tests.cpp" />
     <ClCompile Include="workspace_tests.cpp" />
     <ClCompile Include="numerical_tests.cpp" />

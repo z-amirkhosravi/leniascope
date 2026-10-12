@@ -38,6 +38,8 @@ class Runner {
     void speed(double steps_per_second);
     void save(std::string);
     void load(std::string);
+    std::future<State> capture_current();
+    std::future<void> restore(State);
     std::future<SessionSnapshot> snapshot_sessions();
     std::future<SessionSnapshot> pause_and_snapshot();
 

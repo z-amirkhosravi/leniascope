@@ -13,6 +13,7 @@ class Renderer {
     void use_gpu_image(std::shared_ptr<const GpuImage>);
     ID3D11ShaderResourceView *draw(const ViewSettings &, int width, int height);
     void export_bmp(const std::string &path);
+    std::vector<uint8_t> capture_bmp();
 
   private:
     std::shared_ptr<GpuContext> gpu;

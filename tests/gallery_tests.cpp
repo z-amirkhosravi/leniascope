@@ -1,0 +1,163 @@
+#include "src/gallery.h"
+#include <algorithm>
+#include <chrono>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <limits>
+#ifdef _WIN32
+#include "src/runner.h"
+#endif
+using namespace lenia;
+namespace {
+void check(bool ok, const char *message) {
+    if (!ok)
+        throw std::runtime_error(message);
+}
+void rejects(const std::function<void()> &f) {
+    bool failed = false;
+    try {
+        f();
+    } catch (const std::exception &) {
+        failed = true;
+    }
+    check(failed, "Gallery accepted invalid input");
+}
+std::vector<uint8_t> preview() {
+    std::vector<uint8_t> b(54 + 4 * 3 * 4, 255);
+    std::fill(b.begin(), b.begin() + 54, 0);
+    auto u32 = [&](int pos, uint32_t n) {
+        for (int i = 0; i < 4; ++i)
+            b[pos + i] = uint8_t(n >> (8 * i));
+    };
+    b[0] = 'B';
+    b[1] = 'M';
+    u32(2, uint32_t(b.size()));
+    u32(10, 54);
+    u32(14, 40);
+    u32(18, 4);
+    u32(22, uint32_t(-3));
+    b[26] = 1;
+    b[28] = 32;
+    return b;
+}
+std::string bytes(const std::filesystem::path &p) {
+    std::ifstream f(p, std::ios::binary);
+    return {std::istreambuf_iterator<char>(f), {}};
+}
+void write(const std::filesystem::path &p, const std::string &s) {
+    std::ofstream f(p, std::ios::binary);
+    f << s;
+}
+} // namespace
+void gallery_tests(bool cpu_only) {
+    namespace fs = std::filesystem;
+    auto root =
+        fs::temp_directory_path() /
+        ("lenia-gallery-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct Cleanup {
+        fs::path p;
+        ~Cleanup() {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+    } cleanup{root};
+    check(list_gallery(root).entries.empty() && !fs::exists(root), "Reading empty gallery wrote files");
+    auto bmp = preview();
+    GalleryNotes notes{"Orbium? / candidate", "motion, test", "Quoted \"note\"\nSecond line \\ torus", false,
+                       12.5};
+    std::vector<GalleryEntry> entries;
+    for (auto c : {Config{16, 8, 1, 3}, Config{8, 4, 16, 2}}) {
+        CpuSolver solver(random_state(c, 77, {23, .8, 1.5, .2, .7}));
+        for (int i = 0; i < 3; ++i)
+            solver.step();
+        auto state = solver.snapshot();
+        ViewSettings v;
+        v.view = c.depth > 1 ? 1 : 0;
+        v.palette = 4;
+        v.offset[0] = .25f;
+        auto e = save_gallery_entry(root, state, v, notes, bmp);
+        auto restored = load_gallery_state(root, e.id);
+        check(restored.values == state.values && restored.config == state.config && restored.steps == 3 &&
+                  restored.time == state.time && restored.initialization &&
+                  restored.initialization->patches == 23,
+              "Gallery changed checkpoint or recipe");
+        auto info = read_gallery_entry(root, e.id);
+        check(info.state.values.empty() && info.annotation.notes == notes.notes && info.view.palette == 4 &&
+                  info.view.offset[0] == .25f,
+              "Gallery browse metadata or view differs");
+        auto image = load_gallery_preview(root, e.id);
+        check(image.width == 4 && image.height == 3 &&
+                  image.bgra == std::vector<uint8_t>(bmp.begin() + 54, bmp.end()),
+              "Gallery preview differs");
+        auto field = bytes(root / e.id / "state.lenia");
+        auto edit = notes;
+        edit.reference = true;
+        edit.title = "Reference revised";
+        annotate_gallery_entry(root, e.id, edit);
+        check(read_gallery_entry(root, e.id).annotation.reference &&
+                  bytes(root / e.id / "state.lenia") == field,
+              "Annotation edit changed field");
+        entries.push_back(e);
+    }
+    check(entries[0].id != entries[1].id && list_gallery(root).entries.size() == 2,
+          "Gallery entries overwrite one another");
+    fs::create_directories(root / ".writing-interrupted");
+    write(root / ".writing-interrupted" / "entry.txt", "partial");
+    auto broken = std::string(32, 'a');
+    fs::create_directory(root / broken);
+    write(root / broken / "entry.txt", "invalid");
+    auto catalog = list_gallery(root);
+    check(catalog.entries.size() == 2 && catalog.errors.size() == 1,
+          "Corrupt/incomplete entry hid valid gallery");
+    rejects([&] { read_gallery_entry(root, "../outside"); });
+    auto first = root / entries[0].id;
+    auto original = bytes(first / "state.lenia"), bad = original;
+    bad.back() ^= 1;
+    write(first / "state.lenia", bad);
+    rejects([&] { load_gallery_state(root, entries[0].id); });
+    write(first / "state.lenia", original);
+    auto image = bytes(first / "preview.bmp");
+    write(first / "preview.bmp", "bad");
+    rejects([&] { load_gallery_preview(root, entries[0].id); });
+    check(!load_gallery_state(root, entries[0].id).values.empty(), "Missing preview lost usable checkpoint");
+    write(first / "preview.bmp", image);
+    auto metadata = bytes(first / "entry.txt");
+    write(first / "entry.txt", metadata + "junk");
+    rejects([&] { load_gallery_state(root, entries[0].id); });
+    write(first / "entry.txt", metadata);
+    auto invalid = notes;
+    invalid.observed_time = std::numeric_limits<double>::quiet_NaN();
+    rejects([&] { annotate_gallery_entry(root, entries[0].id, invalid); });
+    check(bytes(first / "entry.txt") == metadata, "Failed note edit damaged entry");
+    invalid = notes;
+    invalid.title.clear();
+    rejects([&] { save_gallery_entry(root, random_state({8, 8, 1, 3}, 1), ViewSettings{}, invalid, bmp); });
+    auto blocked = root / "not-a-directory";
+    write(blocked, "file");
+    auto view = ViewSettings{};
+    view.view = 0;
+    rejects([&] { save_gallery_entry(blocked, random_state({8, 8, 1, 3}, 1), view, notes, bmp); });
+    auto constant = random_state({8, 8, 1, 3}, 1);
+    std::fill(constant.values.begin(), constant.values.end(), .1);
+    auto uniform = save_gallery_entry(root, constant, view, notes, bmp);
+    check(load_gallery_state(root, uniform.id).values == constant.values,
+          "Uniform-field mean rounding rejected entry");
+#ifdef _WIN32
+    // Exact library loading must not silently narrow a CPU reference to float32.
+    Runner runner(!cpu_only);
+    auto before = runner.pause_and_snapshot().get();
+    runner.restore(constant).get();
+    auto after = runner.pause_and_snapshot().get();
+    check(!runner.frame()->gpu && !after.volume && after.states[0]->values == constant.values &&
+              after.states[1]->values == before.states[1]->values,
+          "Exact restore narrowed reference or lost inactive session");
+    auto malformed = constant;
+    malformed.values.pop_back();
+    rejects([&] { runner.restore(malformed).get(); });
+    check(runner.capture_current().get().values == constant.values,
+          "Failed restore replaced current session");
+#endif
+    std::cout << "PASS gallery exact fields/provenance/views/previews, annotation edits, independent "
+                 "entries, corruption isolation, interrupted writes and validation\n";
+}

@@ -46,6 +46,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\application.cpp" />
+    <ClCompile Include="src\gallery.cpp" />
+    <ClCompile Include="src\gallery_panel.cpp" />
     <ClCompile Include="src\desktop_workspace.cpp" />
     <ClCompile Include="src\workspace.cpp" />
     <ClCompile Include="src\simulation.cpp" />

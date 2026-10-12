@@ -93,6 +93,7 @@ Actual-window profiling on the same machine also sustained **120 and 240 steps/s
 - **Transparent volume** supports mouse orbit, wheel zoom, opacity, an opacity floor, a Z cutaway, sampling quality, and a periodic view-origin offset. Opacity compensates for sample distance. **Slice** supports all three axes; **Isosurface** shows an opaque threshold surface. Display choices never modify the scalar state.
 - All 20 original palettes remain available, alongside Ocean / gold. A 4,096-entry GPU palette texture replaces per-pixel CPU segment searches. Interpolation is a display approximation, especially near discontinuities.
 - **Save state** writes a full 2D or 3D checkpoint. **Load state** pauses on the loaded state. **Export view** writes the rendered viewport as a BMP. The inspector scrolls on smaller windows; measurements include an activity plot and separate compute/display timings.
+- **Pattern gallery** keeps independent captures with previews, notes, tags and provenance. Browse or filter entries and restore a saved field with its view.
 - Camera, palettes, slice/volume settings, playback rate, compute backend, selected mode, and window size/maximization are remembered between launches. The activity plot starts afresh when a session is reset or loaded.
 
 ## Initialization and grid size
@@ -110,6 +111,24 @@ CLI experiments accept `--patches`, `--patch-min`, `--patch-max` (side/radius), 
 ```powershell
 .\x64\Modern\Release\LeniascopeCli.exe run --size 256 --radius 26 --seed 7 --patches 80 --patch-min 0.6 --patch-max 1.2 --value-min 0 --value-max 1 --steps 100 --backend gpu --output dense.lenia
 ```
+
+## Pattern gallery
+
+Open **Pattern gallery** in the inspector's **Experiment** section, then choose **Add current field**. Capture pauses evolution at a step boundary. The preview is rendered from that exact captured field, using the current camera, palette and periodic view origin. Add a title, tags and notes, then **Save entry**. Cancel leaves the simulation paused without creating an entry.
+
+The gallery starts empty. To import an existing checkpoint, load it in the laboratory and then capture it; select the CPU reference before importing a double-precision checkpoint if every saved digit must be retained. Search title/tags/notes or filter by dimension, select an entry to inspect its preview and provenance, then use **Load field + view**. Reloading restores the actual field, parameters, counters and view, paused; it does not regenerate from a seed. The inactive simulation session is preserved. Gallery reload automatically selects CPU when the saved values cannot be represented exactly by the current float32 GPU backend. Subsequent backend changes remain explicit numerical choices.
+
+Entries initially have the **Candidate** label. **Reference (your assessment)** is a manual label, not an automatic claim about stability or species. **Observed simulation time** records your reported observation duration; zero means unrecorded. It is separate from the field's simulation age. Displayed mean/minimum/maximum are measurements of the captured scalar field; no motion or morphology classifier is included yet. **Edit notes and labels** changes only annotations, preserving the checkpoint and preview.
+
+Provenance records the current parameters/backend and the initial seed recipe when known. It does not record the entire history of parameter or backend changes made before capture; use notes for those observations.
+
+Each workspace has a `gallery` directory, normally `%LOCALAPPDATA%\Leniascope\Laboratory\gallery`; an explicit `--workspace` keeps its gallery there instead. Each entry is a separate directory containing `state.lenia`, `preview.bmp`, and bounded versioned text metadata `entry.txt`. Copy the entire entry directory to back it up or transfer it into another gallery, then Refresh. Duplicate titles do not overwrite fields. There is no automatic deletion or pruning. Gallery entries are independent of the two rotating recovery slots.
+
+Use a native Windows directory for large experimental workspaces when possible. A 256³ checkpoint contains about 128 MiB of field data, and accessing it through a WSL shared path can make save, verification and recovery substantially slower.
+
+Saving writes a private staging directory and commits it with one rename. Interrupted staging directories are ignored; malformed entries are reported without hiding valid ones. Checksums detect accidental checkpoint/preview corruption, and reload cross-checks the stored provenance and scalar measurements. These are integrity checks, not cryptographic authentication or guarantees against hardware failure. A damaged preview does not prevent loading an intact field. Only the workspace-owning window can write gallery entries. Catalog and file work runs in the background; capture/readback and preview creation can briefly delay a large-grid operation. Closing waits for accepted gallery work before taking the final workspace snapshot and reports write failures.
+
+The portable `src/gallery.*` store is separate from the ImGui interface in `src/gallery_panel.*`. Numerical stepping remains in the simulation worker. `python tools/test_gallery.py <GUI> <CLI> --cuda` exercises the real GUI capture/save/browse/reload flow for CPU, DirectCompute and CUDA in both dimensions, checking full checkpoint bytes, camera settings and the inactive session. Omit `--cuda` for a standard build. The application's `--gallery-smoke` test mode requires an explicit isolated `--workspace`.
 
 ## Workspace recovery
 
@@ -206,7 +225,7 @@ These are short local headless measurements, not universal speedups or display f
 
 ## Research direction and next work
 
-The next planned feature is a reference-pattern gallery: actual saved fields with previews, model parameters, provenance, numerical backend, and measured behavior. A seed recipe alone cannot stand in for a discovered organism. Separate verified references from tentative sightings and record the observation duration. This provides repeatable starting points for numerical comparisons and later automated searches. The items below are research plans, not implemented classifiers or established explanations.
+The gallery now stores actual fields with previews, model parameters, provenance, numerical backend and scalar measurements. The next step is to curate useful examples and attach repeatable behavior measurements—motion and recurrence over a specified duration—to those saved starting points. A seed recipe alone cannot stand in for a discovered organism. Candidate/reference labels are currently manual; they are not proofs of stability. This provides repeatable starting points for numerical comparisons and later automated searches. The items below are research plans, not implemented classifiers or established explanations.
 
 Orbium work should distinguish **existence**, **stability**, and **accessibility from a particular seeding distribution**. Failure to find an organism by random seeding does not settle the first two. Compare classic and smooth models from the same saved organisms, measure motion and recurrence, and track the activity of expanding fronts. The current Smooth reaction is a different birth/death law, not a controlled approximation to classic clipping; a controlled smoothing experiment needs a separately defined family and convergence checks. Likewise, carrying the same radial kernel profile into 3D changes the weight of spherical shells. Kernel geometry and discretization should be explicit experimental variables. Published 3D Lenia organisms already exist; any novelty claim needs a precise definition and literature comparison, for example with Chan's [higher-dimensional study](https://arxiv.org/abs/2005.03742).
 

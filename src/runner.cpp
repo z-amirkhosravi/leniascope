@@ -196,6 +196,55 @@ void Runner::load(std::string path) {
         set_message("Loaded " + path);
     });
 }
+std::future<State> Runner::capture_current() {
+    auto promise = std::make_shared<std::promise<State>>();
+    auto future = promise->get_future();
+    enqueue([this, promise] {
+        running = false;
+        try {
+            auto state = sessions[volume]->snapshot();
+            publish();
+            promise->set_value(std::move(state));
+        } catch (...) {
+            promise->set_exception(std::current_exception());
+        }
+    });
+    return future;
+}
+std::future<void> Runner::restore(State state) {
+    auto promise = std::make_shared<std::promise<void>>();
+    auto future = promise->get_future();
+    enqueue([this, promise, state = std::move(state)]() mutable {
+        running = false;
+        try {
+            bool v = state.config.depth > 1;
+            bool needs_double = use_gpu && std::any_of(state.values.begin(), state.values.end(),
+                                                       [](double a) { return double(float(a)) != a; });
+            std::unique_ptr<Solver> next =
+                needs_double ? std::make_unique<CpuSolver>(std::move(state)) : create(std::move(state));
+            std::unique_ptr<Solver> other;
+            if (needs_double && sessions[!v])
+                other = std::make_unique<CpuSolver>(sessions[!v]->snapshot());
+            if (volume != v)
+                publish();
+            if (needs_double) {
+                sessions[!v] = std::move(other);
+                use_gpu = use_cuda = false;
+            }
+            sessions[v] = std::move(next);
+            ++initialization_revision[v];
+            volume = v;
+            ++generation;
+            publish();
+            set_message(needs_double ? "Loaded gallery field exactly; CPU selected to preserve float64 values"
+                                     : "Loaded gallery field; paused");
+            promise->set_value();
+        } catch (...) {
+            promise->set_exception(std::current_exception());
+        }
+    });
+    return future;
+}
 SessionSnapshot Runner::snapshot_sessions_now() {
     // Worker only: exact, ordered capture on demand, independent of display leases.
     SessionSnapshot result;

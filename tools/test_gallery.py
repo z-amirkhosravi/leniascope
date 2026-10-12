@@ -39,14 +39,15 @@ def exercise(root):
                 field = slot / f'field-{dimension}d.lenia'
                 subprocess.run([str(cli), 'run', '--dimensions', str(dimension), '--size', '16',
                     '--radius', '3', '--seed', str(dimension+100), '--steps', '7', '--backend', backend,
-                    '--patches', '23', '--patch-min', '.8', '--patch-max', '1.5', '--value-min', '.2',
+                    '--layout', 'pair' if dimension == 2 else 'cluster', '--spread', '.8',
+                    '--patches', '2' if dimension == 2 else '23', '--patch-min', '.8', '--patch-max', '1.5', '--value-min', '.2',
                     '--value-max', '.7', '--output', native(field)], check=True, capture_output=True)
                 original.append(field.read_bytes())
             (slot / 'complete.txt').write_text(f'LeniascopeRecovery 1\n1 1 1 {active} {checksum(original[0])} {checksum(original[1])}\n')
-            settings = (f'LeniascopeWorkspace 3\n75 {int(backend!="cpu")} {active} 1 1100 800 0\n'
+            settings = (f'LeniascopeWorkspace 4\n75 {int(backend!="cpu")} {active} 1 1100 800 0\n'
                 '0 2 3 0.3 0.65 0.3 1.9 2 0.02 1 0.75 2 0.1 0.2 0.3\n'
                 '2 1 20 0.6 -1.2 0.4 2.5 3 0.15 0.8 0.5 1 0.2 0.3 0.4\n'
-                f'23 .8 1.5 .2 .7 0 1\n23 .8 1.5 .2 .7 1 0\n{int(backend=="cuda")}\n')
+                f'2 .8 1.5 .2 .7 0 1\n23 .8 1.5 .2 .7 1 0\n{int(backend=="cuda")}\n2 .8 0 0\n1 .8 0 0\n')
             (profile / 'preferences.txt').write_text(settings)
             result = subprocess.run([str(gui), '--gallery-smoke', '--workspace', native(profile)],
                 cwd=case, capture_output=True, timeout=90)
@@ -58,7 +59,7 @@ def exercise(root):
             entry = entries[0]
             assert (entry / 'state.lenia').read_bytes() == original[active]
             text = (entry / 'entry.txt').read_text()
-            assert text.startswith('LeniascopeGallery 1\n') and 'Smoke reference' in text and 'test, periodic' in text
+            assert text.startswith('LeniascopeGallery 2\n') and 'Smoke reference' in text and 'test, periodic' in text
             bmp = (entry / 'preview.bmp').read_bytes()
             assert bmp[:2] == b'BM' and len(bmp) == 54 + 384*288*4
             manifest = (profile / 'recovery-b/complete.txt').read_text().split()

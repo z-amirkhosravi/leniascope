@@ -18,10 +18,19 @@ struct Config {
     void validate() const;
     bool operator==(const Config &c) const;
 };
+enum class SeedLayout : uint32_t {
+    Uniform,
+    Cluster,
+    Pair
+};
+const char *seed_layout_name(SeedLayout);
 struct SeedSettings {
     int patches = 10;
     double size_min = .6, size_max = 1.2; // Independent box side lengths, in kernel radii.
     double value_min = 0, value_max = 1;
+    SeedLayout layout = SeedLayout::Uniform;
+    double spread = 1.5;             // Cluster centre radius or pair centre separation, in kernel radii.
+    double angle = 0, elevation = 0; // Pair direction in degrees; elevation applies only in 3D.
     void validate() const;
 };
 // Expected geometric coverage for uniformly located, overlapping boxes; not a growth prediction.

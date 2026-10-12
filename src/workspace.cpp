@@ -123,7 +123,7 @@ std::string encode_preferences(const Preferences &p) {
     validate(p);
     std::ostringstream out;
     out.imbue(std::locale::classic());
-    out << std::setprecision(std::numeric_limits<double>::max_digits10) << "LeniascopeWorkspace 3\n"
+    out << std::setprecision(std::numeric_limits<double>::max_digits10) << "LeniascopeWorkspace 4\n"
         << p.steps_per_second << ' ' << p.gpu << ' ' << p.volume << ' ' << p.recovery << ' ' << p.window_width
         << ' ' << p.window_height << ' ' << p.maximized << '\n';
     for (const auto &v : p.views) {
@@ -140,6 +140,8 @@ std::string encode_preferences(const Preferences &p) {
             << ' ' << p.keep_seed_coverage[i] << ' ' << p.scale_radius[i] << '\n';
     }
     out << p.cuda << '\n';
+    for (const auto &s : p.seeds)
+        out << uint32_t(s.layout) << ' ' << s.spread << ' ' << s.angle << ' ' << s.elevation << '\n';
     return out.str();
 }
 Preferences decode_preferences(const std::string &text) {
@@ -150,7 +152,7 @@ Preferences decode_preferences(const std::string &text) {
     int version;
     if (!(in >> magic >> version >> p.steps_per_second >> p.gpu >> p.volume >> p.recovery >> p.window_width >>
           p.window_height >> p.maximized) ||
-        magic != "LeniascopeWorkspace" || (version < 1 || version > 3))
+        magic != "LeniascopeWorkspace" || (version < 1 || version > 4))
         throw std::runtime_error("Invalid workspace settings header");
     for (auto &v : p.views) {
         in >> v.view >> v.axis >> v.palette >> v.slice >> v.yaw >> v.pitch >> v.distance >> v.opacity >>
@@ -166,6 +168,12 @@ Preferences decode_preferences(const std::string &text) {
         }
     if (version >= 3)
         in >> p.cuda;
+    if (version >= 4)
+        for (auto &s : p.seeds) {
+            uint32_t layout = 0;
+            in >> layout >> s.spread >> s.angle >> s.elevation;
+            s.layout = SeedLayout(layout);
+        }
     if (!in)
         throw std::runtime_error("Truncated workspace settings");
     in >> std::ws;

@@ -26,14 +26,19 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
     run('run', '--dimensions', 3, '--size', 16, '--radius', 3, '--steps', 0,
         '--output', arg_path(state))
     data = state.read_bytes()
-    assert data[:8] == b'LeniaS3\0'
+    assert data[:8] == b'LeniaS4\0'
     recipe_offset = 96 + struct.unpack_from('<I', data, 84)[0]
     assert struct.unpack_from('<Iii4d', data, recipe_offset) == (1, 10, 3, .6, 1.2, 0., 1.)
     # Remove just the new metadata to make a genuine version-2 checkpoint.
     legacy = root / 'version2.lenia'
-    legacy.write_bytes(b'LeniaS2\0' + data[8:recipe_offset] + data[recipe_offset+44:])
+    legacy.write_bytes(b'LeniaS2\0' + data[8:recipe_offset] + data[recipe_offset+72:])
     comparison = run('compare', arg_path(legacy), arg_path(state))
     assert float(comparison.splitlines()[1].split(',')[-1]) < 1e-14
+    version3 = root / 'version3.lenia'
+    version3.write_bytes(b'LeniaS3\0' + data[8:recipe_offset+44] + data[recipe_offset+72:])
+    migrated = root / 'migrated.lenia'
+    run('run', '--input', arg_path(version3), '--steps', 0, '--output', arg_path(migrated))
+    assert migrated.read_bytes() == data  # Old recipes acquire the uniform placement defaults.
     upgraded = root / 'upgraded.lenia'
     run('run', '--input', arg_path(legacy), '--steps', 0, '--output', arg_path(upgraded))
     upgraded_data = upgraded.read_bytes()
@@ -88,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
     offset = 96 + struct.unpack_from('<I', custom_data, 84)[0]
     assert struct.unpack_from('<Iii4d', custom_data, offset) == (1, 23, 3, .8, 1.5, .2, .7)
     row = next(csv.DictReader(custom_csv.open()))
-    assert row['schema'] == '3' and int(row['seed_patches']) == 23 and float(row['seed_value_min']) == .2
+    assert row['schema'] == '4' and int(row['seed_patches']) == 23 and float(row['seed_value_min']) == .2
     for args in [('--patches', -1), ('--patch-min', 2), ('--value-max', 2), ('--patches', 5000)]:
         run('run', '--size', 16, '--radius', 3, '--steps', 0, *args, succeeds=False)
     run('run', '--input', arg_path(custom), '--steps', 0, '--patches', 10, succeeds=False)
@@ -101,6 +106,23 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
     changed = changed_radius.read_bytes()
     assert struct.unpack_from('<i', changed, 20)[0] == 4
     assert struct.unpack_from('<i', changed, offset+8)[0] == 3 # Preserve the actual seeding radius.
+    for dimensions in (2, 3):
+        for layout in ('cluster', 'pair'):
+            field, trace, replay = (root / f'{layout}-{dimensions}{suffix}' for suffix in ('.lenia', '.csv', '-replay.lenia'))
+            recipe = ('--layout', layout, '--spread', .8, '--angle', -30, '--elevation', 20)
+            run('run', '--dimensions', dimensions, '--size', 32, '--radius', 5, '--seed', 42,
+                '--steps', 0, *recipe, '--output', arg_path(field), '--csv', arg_path(trace))
+            record = next(csv.DictReader(trace.open()))
+            assert record['seed_layout'] == ('1' if layout == 'cluster' else '2')
+            assert record['seed_patches'] == ('10' if layout == 'cluster' else '2')
+            assert [float(record[k]) for k in ('seed_spread','seed_angle','seed_elevation')] == [.8, -30, 20]
+            run('run', '--input', arg_path(field), '--steps', 0, '--output', arg_path(replay))
+            assert replay.read_bytes() == field.read_bytes()
+    for bad in [('--layout','unknown'), ('--layout','pair','--patches',3), ('--spread',-1),
+                ('--spread','nan'), ('--angle',181), ('--elevation',91)]:
+        run('run','--size',16,'--radius',3,'--steps',0,*bad,succeeds=False)
+    for flag, value in [('--layout','pair'), ('--spread',1), ('--angle',30), ('--elevation',20)]:
+        run('run','--input',arg_path(custom),'--steps',0,flag,value,succeeds=False)
     if '--cuda' in sys.argv[2:]:
         for backend in ('gpu', 'cuda'):
             full, partial, resumed = (root / f'{backend}-{part}.lenia' for part in ('full', 'partial', 'resumed'))
@@ -112,4 +134,4 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
             records = list(csv.DictReader(trace.open()))
             assert all(r['backend'] == backend and r['seed_patches'] == '23' for r in records)
         print('PASS CUDA/DirectCompute CLI checkpoints, exact continuation and CSV backend labels')
-    print('PASS seed recipes, v2 migration, CSV metadata; CLI malformed checkpoints, resume equivalence, recurrence, sweep CSV, timestep study, invalid options')
+    print('PASS seed layouts/recipes, v2/v3 migration, CSV metadata; CLI malformed checkpoints, resume equivalence, recurrence, sweep CSV, timestep study, invalid options')

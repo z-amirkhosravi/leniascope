@@ -1,10 +1,13 @@
+#include "src/file_integrity.h"
 #include "src/gallery.h"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #ifdef _WIN32
 #include "src/runner.h"
 #endif
@@ -68,7 +71,8 @@ void gallery_tests(bool cpu_only) {
                        12.5};
     std::vector<GalleryEntry> entries;
     for (auto c : {Config{16, 8, 1, 3}, Config{8, 4, 16, 2}}) {
-        CpuSolver solver(random_state(c, 77, {23, .8, 1.5, .2, .7}));
+        SeedSettings recipe{23, .8, 1.5, .2, .7, SeedLayout::Cluster, .75, 0, 0};
+        CpuSolver solver(random_state(c, 77, recipe));
         for (int i = 0; i < 3; ++i)
             solver.step();
         auto state = solver.snapshot();
@@ -80,7 +84,9 @@ void gallery_tests(bool cpu_only) {
         auto restored = load_gallery_state(root, e.id);
         check(restored.values == state.values && restored.config == state.config && restored.steps == 3 &&
                   restored.time == state.time && restored.initialization &&
-                  restored.initialization->patches == 23,
+                  restored.initialization->patches == 23 &&
+                  restored.initialization->layout == SeedLayout::Cluster &&
+                  restored.initialization->spread == .75,
               "Gallery changed checkpoint or recipe");
         auto info = read_gallery_entry(root, e.id);
         check(info.state.values.empty() && info.annotation.notes == notes.notes && info.view.palette == 4 &&
@@ -143,6 +149,44 @@ void gallery_tests(bool cpu_only) {
     auto uniform = save_gallery_entry(root, constant, view, notes, bmp);
     check(load_gallery_state(root, uniform.id).values == constant.values,
           "Uniform-field mean rounding rejected entry");
+    // A version-1 gallery points at a version-3 checkpoint. Editing its notes must keep
+    // that checkpoint intact, even though newly written metadata uses the new schema.
+    auto legacy = save_gallery_entry(root, constant, view, {"Legacy fixture", "", ""}, bmp);
+    auto legacy_dir = root / legacy.id;
+    auto checkpoint = bytes(legacy_dir / "state.lenia");
+    uint32_t backend_length = 0;
+    for (int i = 0; i < 4; ++i)
+        backend_length |= uint32_t(static_cast<unsigned char>(checkpoint[84 + i])) << (8 * i);
+    checkpoint[6] = '3';
+    checkpoint.erase(96 + backend_length + 44, 28); // Only the new placement fields.
+    write(legacy_dir / "state.lenia", checkpoint);
+    std::istringstream modern(bytes(legacy_dir / "entry.txt"));
+    std::vector<std::string> rows(10);
+    for (auto &row : rows)
+        std::getline(modern, row);
+    rows[0] = "LeniascopeGallery 1";
+    rows[1] = std::to_string(legacy.created) + " " +
+              std::to_string(file_checksum(legacy_dir / "state.lenia")) + " " +
+              std::to_string(legacy.preview_hash);
+    for (int i = 0; i < 4; ++i)
+        rows[8].resize(rows[8].find_last_of(' '));
+    std::string prefs;
+    modern >> std::quoted(prefs);
+    for (int i = 0; i < 2; ++i)
+        prefs.resize(prefs.find_last_of('\n', prefs.size() - 2) + 1);
+    prefs.replace(prefs.find("Workspace 4"), 11, "Workspace 3");
+    std::ostringstream old_metadata;
+    for (const auto &row : rows)
+        old_metadata << row << '\n';
+    old_metadata << std::quoted(prefs) << '\n';
+    write(legacy_dir / "entry.txt", old_metadata.str());
+    check(load_gallery_state(root, legacy.id).values == constant.values &&
+              read_gallery_entry(root, legacy.id).state.initialization->layout == SeedLayout::Uniform,
+          "Old gallery/checkpoint pair no longer loads");
+    annotate_gallery_entry(root, legacy.id, {"Legacy notes edited", "", "Still the same field"});
+    check(load_gallery_state(root, legacy.id).values == constant.values &&
+              bytes(legacy_dir / "state.lenia") == checkpoint,
+          "Editing old gallery metadata changed its checkpoint");
 #ifdef _WIN32
     // Exact library loading must not silently narrow a CPU reference to float32.
     Runner runner(!cpu_only);

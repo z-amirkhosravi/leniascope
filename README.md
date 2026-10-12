@@ -89,6 +89,7 @@ Actual-window profiling on the same machine also sustained **120 and 240 steps/s
 - DirectCompute GPU compute is selected initially, with a visible CPU fallback if compute initialization fails. Uncheck it to use the double-precision FFTW reference, or use the compute selector in CUDA builds. Rendering still uses Direct3D.
 - **2D field** and **3D volume** preserve independent simulation states and view settings. The inspector and viewport keep the same layout.
 - **Grid and initialization** exposes patch count, minimum/maximum side length in kernel radii, and the random value range. These controls affect Reset, New seed, and Create grid; changing them does not modify an evolving field. Counts and ranges are independent for 2D and 3D.
+- **Placement** adds a single cluster or an isolated pair, with local spacing independent of the size of the grid. **Preview seed (paused)** replaces the current field with the selected initialization and pauses it for inspection.
 - Parameter edits take effect through **Apply changes**, at a simulation step boundary. Simulation `dt` and the requested steps/s are independent.
 - **Transparent volume** supports mouse orbit, wheel zoom, opacity, an opacity floor, a Z cutaway, sampling quality, and a periodic view-origin offset. Opacity compensates for sample distance. **Slice** supports all three axes; **Isosurface** shows an opaque threshold surface. Display choices never modify the scalar state.
 - All 20 original palettes remain available, alongside Ocean / gold. A 4,096-entry GPU palette texture replaces per-pixel CPU segment searches. Interpolation is a display approximation, especially near discontinuities.
@@ -100,6 +101,16 @@ Actual-window profiling on the same machine also sustained **120 and 240 steps/s
 
 The ten-patch default is reproducible and unchanged: each box side is independently uniform from 0.6 to 1.2 times the kernel radius, rounded down to at least one cell, with uniform values in [0,1]. Boxes wrap on the torus; overlaps overwrite earlier values. Larger custom boxes are capped at each grid dimension. Zero patches produces an empty field. Settings are validated, and excessively overlapping jobs are rejected before allocating a new field.
 
+**Placement** separates local proximity from the density of patches over the whole domain:
+
+- **Across grid** retains the original independent uniform placement and coverage estimates.
+- **Single cluster** puts the selected number of patch centres uniformly inside a disk (2D) or ball (3D) around the grid centre. **Spread / R** is that disk/ball's radius, in kernel radii. The boxes extend beyond their centres; all other cells start at zero.
+- **Isolated pair** places exactly two boxes symmetrically around the grid centre. **Separation / R** controls centre-to-centre distance, not the gap between edges. **Pair angle**, and **Elevation** in 3D, set the direction of their separation; the boxes remain aligned with the grid axes. Positions are rounded to cells. There are no other patches.
+
+For an isolated two-patch experiment on a 1024² grid, choose **Isolated pair**, leave the side/value ranges as desired, and start with separation **1.5 R**. Use **Preview seed (paused)**, then Play. Adjust separation and Reset while holding the seed fixed to compare the same patch sizes and random contents at different distances; **New seed** changes them. A **Single cluster** of three or four patches with a small spread provides another controlled starting point. These controls do not guarantee an Orbium or a conjoined pair will form.
+
+Cluster/pair resizing retains the patch count, even when **Keep seed coverage on resize** is checked; that checkbox is disabled for these layouts. At a fixed radius, enlarging an even-sized grid translates the same local seed to the new centre and adds empty space around it. **Scale radius with grid** still scales both box sizes and local spacing. The UI warns when the chosen spread and box sizes may reach periodic edges; reduce them or enlarge the grid to keep a surrounding empty region. Periodic copies can still interact during evolution. Uniform-coverage estimates are hidden for these correlated layouts.
+
 With radius 26 and ten patches, expected geometric coverage is about **5.58% at 128³** but **0.71% at 256³**. Increasing the grid previously retained both radius and patch count, so it enlarged the domain without compensating seed density. This is a change in the experiment, not merely finer resolution; it does not by itself establish which morphology will survive.
 
 **Keep seed coverage on resize** is enabled by default. Create grid then adjusts the count to approximately preserve expected coverage, accounting for patch overlap, rounding, and radius changes; the preview shows the resulting radius/count before creation. For 128³ → 256³ at radius 26, ten patches become 80. Disable it to keep a fixed count. **Scale radius with grid** is a separate, initially unchecked option; doubling the radius to 52 grows the patches too, so roughly ten patches suffice. Neither option resamples the current field or guarantees identical dynamics across resolutions.
@@ -110,6 +121,12 @@ CLI experiments accept `--patches`, `--patch-min`, `--patch-max` (side/radius), 
 
 ```powershell
 .\x64\Modern\Release\LeniascopeCli.exe run --size 256 --radius 26 --seed 7 --patches 80 --patch-min 0.6 --patch-max 1.2 --value-min 0 --value-max 1 --steps 100 --backend gpu --output dense.lenia
+```
+
+`--layout uniform|cluster|pair`, `--spread` (cluster radius or pair separation in R), `--angle` and `--elevation` expose placement to repeatable experiments. Pair mode defaults to two patches and rejects any other count. For example:
+
+```powershell
+.\x64\Cuda\Release\LeniascopeCli.exe run --dimensions 2 --size 1024 --radius 103 --seed 7 --layout pair --spread 1.5 --angle 0 --steps 0 --backend cuda --output isolated-pair.lenia
 ```
 
 ## Pattern gallery
@@ -189,7 +206,7 @@ Float32 GPU trajectories can diverge from float64 CPU trajectories over many ste
 .\x64\Modern\Release\LeniascopeCli.exe converge first.lenia --steps 20 --levels 4 > convergence.csv
 ```
 
-Sweep filenames receive `.run-N` suffixes. A seed identifies the initialization algorithm and its input; checkpoints contain the actual field. Version 3 stores dimensions, parameters, rule, smoothing sharpness, seed, step count, simulation time, solver identifier, double-valued state, and an optional initialization recipe (count, size/value ranges, and the radius used when seeding). CSV schema 3 also records this recipe. Version 2 checkpoints remain readable; unavailable seed provenance is marked unknown. Workspace preferences are now version 3, adding the CUDA choice, and still read versions 1 and 2. The recipe is not a history of subsequent parameter edits. GPU values are promoted from float32 when saved, without adding precision. Writes use a temporary sibling and rename after a successful close. The binary format assumes little-endian IEEE-754, as on the supported Windows/x86-64 and tested Linux/x86-64 systems. Valid legacy 2D `Leniav1` files can be imported; ambiguous legacy 3D payloads are rejected.
+Sweep filenames receive `.run-N` suffixes. A seed identifies the initialization algorithm and its input; checkpoints contain the actual field. Version 4 stores dimensions, parameters, rule, smoothing sharpness, seed, step count, simulation time, solver identifier, double-valued state, and an optional initialization recipe (count, size/value ranges, original radius, layout, spread and pair direction). CSV schema 4 records the same recipe; `seed_layout` is 0 for uniform, 1 for cluster, 2 for pair. Version 2/3 checkpoints remain readable; unavailable seed provenance is marked unknown and older recipes retain uniform placement. Workspace preferences are version 4 and still read versions 1–3. Gallery metadata is version 2 and still reads version 1, including the original checkpoints and previews. Existing gallery entries are not rewritten when browsed or loaded. Older executables cannot read the new formats. The recipe is not a history of subsequent parameter edits. GPU values are promoted from float32 when saved, without adding precision. Writes use a temporary sibling and rename after a successful close. The binary format assumes little-endian IEEE-754, as on the supported Windows/x86-64 and tested Linux/x86-64 systems. Valid legacy 2D `Leniav1` files can be imported; ambiguous legacy 3D payloads are rejected.
 
 `compare` computes periodic cross-correlation with FFTW, then verifies the best integer translation using an RMS residual. Its convention is `second(x + d)` compared with `first(x)`. It reports the time difference, translation, and residual; this is a candidate-recurrence diagnostic, not a proof of a relative periodic orbit. Constant or symmetric fields can have non-unique best translations. Subcell shifts, continuation, stability analysis, and certified orbit finding remain research work.
 

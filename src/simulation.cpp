@@ -109,6 +109,23 @@ void SeedSettings::validate() const {
         size_min < .05 || size_max < size_min || size_max > 4 || !std::isfinite(value_min) ||
         !std::isfinite(value_max) || value_min < 0 || value_max > 1 || value_max < value_min)
         throw std::invalid_argument("Seed settings: 0..4096 patches, sides 0.05..4 radii, values in [0,1]");
+    if (uint32_t(layout) > 2 || !std::isfinite(spread) || spread < 0 || spread > 16 ||
+        !std::isfinite(angle) || angle < -180 || angle > 180 || !std::isfinite(elevation) ||
+        elevation < -90 || elevation > 90 || (layout == SeedLayout::Pair && patches != 2))
+        throw std::invalid_argument("Invalid seed layout: spread 0..16 radii, angle -180..180, elevation "
+                                    "-90..90; pairs need 2 patches");
+}
+const char *seed_layout_name(SeedLayout layout) {
+    switch (layout) {
+    case SeedLayout::Uniform:
+        return "Across grid";
+    case SeedLayout::Cluster:
+        return "Single cluster";
+    case SeedLayout::Pair:
+        return "Isolated pair";
+    default:
+        return "Unknown";
+    }
 }
 namespace {
 double mean_side(int dimension, int radius, const SeedSettings &s) {
@@ -131,12 +148,20 @@ double patch_fraction(const Config &c, const SeedSettings &s) {
 }
 } // namespace
 double seed_coverage(const Config &c, const SeedSettings &s) {
+    if (s.layout != SeedLayout::Uniform)
+        throw std::invalid_argument("Coverage estimate applies only to patches placed across the grid");
     double fraction = patch_fraction(c, s);
     if (!s.patches)
         return 0;
     return fraction == 1 ? 1 : -std::expm1(s.patches * std::log1p(-fraction));
 }
 SeedSettings resize_seed_settings(const Config &from, const Config &to, SeedSettings s) {
+    if (s.layout != SeedLayout::Uniform) {
+        from.validate();
+        to.validate();
+        s.validate();
+        return s; // Enlarging an isolated experiment adds empty space, not extra patches.
+    }
     double old_fraction = patch_fraction(from, s), new_fraction = patch_fraction(to, s);
     if (!s.patches || old_fraction == new_fraction)
         return s;
@@ -168,14 +193,41 @@ State random_state(Config c, uint64_t seed, SeedSettings settings) {
     uint64_t rng = seed;
     // Keep the default random stream compatible with the previous ten-patch initializer.
     for (int patch = 0; patch < settings.patches; ++patch) {
-        int bx = int(uniform(rng) * c.width), by = int(uniform(rng) * c.height),
-            bz = int(uniform(rng) * c.depth);
+        double ux = uniform(rng), uy = uniform(rng), uz = uniform(rng);
+        int bx = int(ux * c.width), by = int(uy * c.height), bz = int(uz * c.depth);
         auto side = [&](int n) {
             return std::clamp(
                 int(c.radius * (settings.size_min + (settings.size_max - settings.size_min) * uniform(rng))),
                 1, n);
         };
         int w = side(c.width), h = side(c.height), d = c.depth > 1 ? side(c.depth) : 1;
+        if (settings.layout != SeedLayout::Uniform) {
+            constexpr double pi = 3.14159265358979323846;
+            double dx, dy, dz = 0;
+            if (settings.layout == SeedLayout::Pair) {
+                double distance = (patch == 0 ? -.5 : .5) * settings.spread * c.radius;
+                double azimuth = settings.angle * pi / 180;
+                double tilt = c.depth > 1 ? settings.elevation * pi / 180 : 0;
+                dx = distance * std::cos(tilt) * std::cos(azimuth);
+                dy = distance * std::cos(tilt) * std::sin(azimuth);
+                dz = distance * std::sin(tilt);
+            } else {
+                // Uniform centres in a disk/ball, not a square/cube. Random draws do not depend
+                // on spread, so changing spacing retains the patch sizes and random contents.
+                double radius = settings.spread * c.radius * (c.depth > 1 ? std::cbrt(ux) : std::sqrt(ux));
+                double z = c.depth > 1 ? 2 * uz - 1 : 0;
+                double horizontal = radius * std::sqrt(std::max(0., 1 - z * z));
+                dx = horizontal * std::cos(2 * pi * uy);
+                dy = horizontal * std::sin(2 * pi * uy);
+                dz = radius * z;
+            }
+            auto origin = [](int n, int side, double offset) {
+                return wrap(int(std::lround((n - side) * .5 + offset)), n);
+            };
+            bx = origin(c.width, w, dx);
+            by = origin(c.height, h, dy);
+            bz = c.depth > 1 ? origin(c.depth, d, dz) : 0;
+        }
         for (int z = 0; z < d; ++z)
             for (int y = 0; y < h; ++y)
                 for (int x = 0; x < w; ++x)
@@ -396,7 +448,7 @@ void CpuSolver::parameters(const Config &c) {
     }
 }
 
-// Versions 2/3 use little endian IEEE-754 doubles. Version 3 records the optional seed recipe.
+// Versions 2/3/4 use little endian IEEE-754 doubles. Version 4 adds seed placement controls.
 // Version 1 import supports the original 2D Leniav1 format.
 void save_state(const State &s, const std::string &filename) {
     validate_values(s);
@@ -415,7 +467,7 @@ void save_state(const State &s, const std::string &filename) {
     std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
     if (!f)
         throw std::runtime_error("Cannot open checkpoint for writing");
-    f.write("LeniaS3\0", 8);
+    f.write("LeniaS4\0", 8);
     const auto &c = s.config;
     for (int v : {c.width, c.height, c.depth, c.radius})
         write(f, int32_t(v));
@@ -437,6 +489,9 @@ void save_state(const State &s, const std::string &filename) {
         write(f, int32_t(r.patches));
         write(f, int32_t(s.initialization_radius));
         for (double v : {r.size_min, r.size_max, r.value_min, r.value_max})
+            write(f, v);
+        write(f, uint32_t(r.layout));
+        for (double v : {r.spread, r.angle, r.elevation})
             write(f, v);
     }
     f.write(reinterpret_cast<const char *>(s.values.data()), s.values.size() * sizeof(double));
@@ -469,7 +524,8 @@ State load_state(const std::string &filename) {
         s.seed = 0;
         s.backend = "Legacy v1 import";
     } else if (std::memcmp(signature.data(), "LeniaS2\0", 8) == 0 ||
-               std::memcmp(signature.data(), "LeniaS3\0", 8) == 0) {
+               std::memcmp(signature.data(), "LeniaS3\0", 8) == 0 ||
+               std::memcmp(signature.data(), "LeniaS4\0", 8) == 0) {
         int32_t dims[4];
         for (auto &v : dims)
             read(f, v);
@@ -499,7 +555,7 @@ State load_state(const std::string &filename) {
         s.config.validate();
         if (n != s.config.count())
             throw std::runtime_error("Checkpoint cell count mismatch");
-        if (signature[6] == '3') {
+        if (signature[6] >= '3') {
             uint32_t present;
             read(f, present);
             if (present > 1)
@@ -516,6 +572,14 @@ State load_state(const std::string &filename) {
                 read(f, r.size_max);
                 read(f, r.value_min);
                 read(f, r.value_max);
+                if (signature[6] >= '4') {
+                    uint32_t layout;
+                    read(f, layout);
+                    r.layout = SeedLayout(layout);
+                    read(f, r.spread);
+                    read(f, r.angle);
+                    read(f, r.elevation);
+                }
                 r.validate();
                 s.initialization = r;
             }

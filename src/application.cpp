@@ -594,14 +594,45 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 ImGui::SliderInt("Power of two", &grid_power, 4, is_volume ? 8 : 11);
                 ImGui::Text("%d x %d%s", 1 << grid_power, 1 << grid_power, is_volume ? " x same" : "");
                 ImGui::Checkbox("Scale radius with grid", &preferences.scale_radius[is_volume]);
+                ImGui::BeginDisabled(seed_settings.layout != SeedLayout::Uniform);
                 ImGui::Checkbox("Keep seed coverage on resize", &preferences.keep_seed_coverage[is_volume]);
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip(
                         "Adjust patch count to preserve expected coverage, accounting for the new "
                         "radius.\nThis creates a new random field; it does not resample the current state.");
+                ImGui::EndDisabled();
                 ImGui::InputScalar("Seed", ImGuiDataType_U64, &seed);
+                int layout = int(seed_settings.layout);
+                if (ImGui::Combo("Placement", &layout, "Across grid\0Single cluster\0Isolated pair\0")) {
+                    seed_settings.layout = SeedLayout(layout);
+                    if (seed_settings.layout == SeedLayout::Pair)
+                        seed_settings.patches = 2;
+                }
+                ImGui::BeginDisabled(seed_settings.layout == SeedLayout::Pair);
                 ImGui::InputInt("Patches", &seed_settings.patches);
                 seed_settings.patches = std::clamp(seed_settings.patches, 0, 4096);
+                ImGui::EndDisabled();
+                if (seed_settings.layout != SeedLayout::Uniform) {
+                    float spread = float(seed_settings.spread);
+                    if (ImGui::DragFloat(seed_settings.layout == SeedLayout::Pair ? "Separation / R"
+                                                                                  : "Spread / R",
+                                         &spread, .01f, 0, 16, "%.2f", ImGuiSliderFlags_AlwaysClamp))
+                        seed_settings.spread = spread;
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(
+                            seed_settings.layout == SeedLayout::Pair
+                                ? "Distance between patch centres, not their edges. Rounded to cells."
+                                : "Patch centres are random within this radius of the grid centre.");
+                    if (seed_settings.layout == SeedLayout::Pair) {
+                        float angle = float(seed_settings.angle), elevation = float(seed_settings.elevation);
+                        if (ImGui::SliderFloat("Pair angle", &angle, -180, 180, "%.1f deg"))
+                            seed_settings.angle = angle;
+                        if (is_volume && ImGui::SliderFloat("Elevation", &elevation, -90, 90, "%.1f deg"))
+                            seed_settings.elevation = elevation;
+                    }
+                    ImGui::TextWrapped("Centred on the grid. Resizing keeps the patch count; spread and size "
+                                       "use the kernel radius.");
+                }
                 float size_min = float(seed_settings.size_min), size_max = float(seed_settings.size_max);
                 if (ImGui::DragFloatRange2("Side / radius", &size_min, &size_max, .01f, .05f, 4.f, "min %.2f",
                                            "max %.2f", ImGuiSliderFlags_AlwaysClamp)) {
@@ -622,17 +653,30 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 if (ImGui::Button("Ten-patch defaults", {-1, 0}))
                     seed_settings = SeedSettings{};
                 const auto &current = frame ? frame->state.config : edit;
-                double coverage = seed_coverage(current, seed_settings);
-                ImGui::Text("Expected coverage: %.2f%%", 100 * coverage);
-                ImGui::Text("Expected mean: %.4f",
-                            coverage * (seed_settings.value_min + seed_settings.value_max) / 2);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip(
-                        "Statistical estimates including patch overlap; individual seeds vary.\nOverlapping "
-                        "patches overwrite values. This is not a prediction of survival.");
+                if (ImGui::Button("Preview seed (paused)", {-1, 0})) {
+                    runner.play(false);
+                    runner.reset(current, seed, seed_settings);
+                }
+                if (seed_settings.layout == SeedLayout::Uniform) {
+                    double coverage = seed_coverage(current, seed_settings);
+                    ImGui::Text("Expected coverage: %.2f%%", 100 * coverage);
+                    ImGui::Text("Expected mean: %.4f",
+                                coverage * (seed_settings.value_min + seed_settings.value_max) / 2);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Statistical estimates including patch overlap; individual seeds "
+                                          "vary.\nOverlapping "
+                                          "patches overwrite values. This is not a prediction of survival.");
+                }
                 int minimum_side = std::min(current.width, current.height);
                 if (current.depth > 1)
                     minimum_side = std::min(minimum_side, current.depth);
+                if (seed_settings.layout != SeedLayout::Uniform) {
+                    double diameter =
+                        seed_settings.spread * (seed_settings.layout == SeedLayout::Cluster ? 2 : 1);
+                    if ((diameter + seed_settings.size_max) * current.radius + 1 >= minimum_side)
+                        ImGui::TextWrapped("This spread can reach periodic edges. Reduce spread/size or "
+                                           "enlarge the grid for more empty space around it.");
+                }
                 int maximum_side = seed_settings.size_min == seed_settings.size_max
                                        ? int(current.radius * seed_settings.size_max)
                                        : int(std::ceil(current.radius * seed_settings.size_max)) - 1;
@@ -661,7 +705,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                         (c.width != current.width || c.height != current.height || c.depth != current.depth))
                         next = resize_seed_settings(current, c, next);
                     ImGui::Text("New grid: radius %d, %d patches", c.radius, next.patches);
-                    ImGui::Text("Expected coverage: %.2f%%", 100 * seed_coverage(c, next));
+                    if (next.layout == SeedLayout::Uniform)
+                        ImGui::Text("Expected coverage: %.2f%%", 100 * seed_coverage(c, next));
                 } catch (const std::exception &e) {
                     resize_error = e.what();
                     ImGui::TextWrapped("%s. Adjust the recipe or disable coverage preservation.",

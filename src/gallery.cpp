@@ -70,7 +70,8 @@ std::string summary(const State &s) {
     if (s.initialization) {
         auto &a = *s.initialization;
         out << ' ' << s.initialization_radius << ' ' << a.patches << ' ' << a.size_min << ' ' << a.size_max
-            << ' ' << a.value_min << ' ' << a.value_max;
+            << ' ' << a.value_min << ' ' << a.value_max << ' ' << uint32_t(a.layout) << ' ' << a.spread << ' '
+            << a.angle << ' ' << a.elevation;
     }
     return out.str();
 }
@@ -81,7 +82,7 @@ std::string encode(const GalleryEntry &e) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
     auto &a = e.annotation;
-    out << std::setprecision(17) << "LeniascopeGallery 1\n"
+    out << std::setprecision(17) << "LeniascopeGallery 2\n"
         << e.created << ' ' << e.field_hash << ' ' << e.preview_hash << '\n'
         << std::quoted(a.title) << '\n'
         << std::quoted(a.tags) << '\n'
@@ -129,11 +130,16 @@ GalleryEntry read_gallery_entry(const fs::path &root, const std::string &id) {
         s.initialization.emplace();
         auto &r = *s.initialization;
         in >> s.initialization_radius >> r.patches >> r.size_min >> r.size_max >> r.value_min >> r.value_max;
+        if (version >= 2) {
+            uint32_t layout = 0;
+            in >> layout >> r.spread >> r.angle >> r.elevation;
+            r.layout = SeedLayout(layout);
+        }
         r.validate();
         require(s.initialization_radius > 0 && s.initialization_radius <= 4096, "Invalid seed radius");
     }
     in >> e.measures.mean >> e.measures.minimum >> e.measures.maximum >> std::quoted(prefs);
-    require(bool(in) && magic == "LeniascopeGallery" && version == 1 && e.created > 0,
+    require(bool(in) && magic == "LeniascopeGallery" && (version == 1 || version == 2) && e.created > 0,
             "Invalid gallery metadata");
     in >> std::ws;
     require(in.eof(), "Unexpected gallery metadata");

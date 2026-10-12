@@ -63,7 +63,9 @@ with tempfile.TemporaryDirectory(prefix="leniascope-gui-workspace-") as temporar
         rows = (profile / "preferences.txt").read_text().splitlines()
         controls = rows[1].split()
         assert controls[:4] == ["75", str(int(gpu)), "0", "1"]
-        assert len(rows) == len(settings.splitlines())
+        assert rows[0] == 'LeniascopeWorkspace 4'
+        assert len(rows) == len(settings.splitlines()) + 2
+        assert rows[-2:] == ['0 1.5 0 0', '0 1.5 0 0']
         for actual, expected in zip(rows[2:], settings.splitlines()[2:]):
             assert all(abs(float(a)-float(b)) < 1e-6 for a, b in zip(actual.split(), expected.split()))
     print(f"PASS {'CUDA' if cuda else ('GPU' if gpu else 'CPU')} GUI repeated restart: both paused fields, camera/palettes/rate/seed settings, recovery rotation, graceful close")

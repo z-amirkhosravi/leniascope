@@ -367,6 +367,12 @@ void GalleryPanel::draw(Runner &runner, const std::array<ViewSettings, 2> &views
                 auto &a = *s.initialization;
                 ImGui::TextWrapped("%d patches; sides %.3g - %.3g x R%d; values %.3g - %.3g", a.patches,
                                    a.size_min, a.size_max, s.initialization_radius, a.value_min, a.value_max);
+                ImGui::Text("Placement: %s", seed_layout_name(a.layout));
+                if (a.layout == SeedLayout::Cluster)
+                    ImGui::Text("Cluster radius %.3g R", a.spread);
+                if (a.layout == SeedLayout::Pair)
+                    ImGui::TextWrapped("Centre separation %.3g R; angle %.3g deg; elevation %.3g deg",
+                                       a.spread, a.angle, a.elevation);
             } else
                 ImGui::TextDisabled("Seed recipe unknown");
             ImGui::Text("Observed for %.6g simulation time (reported)", e.annotation.observed_time);

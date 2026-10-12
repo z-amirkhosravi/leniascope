@@ -2,6 +2,7 @@
 #include "gallery.h"
 #include "renderer.h"
 #include "runner.h"
+#include <atomic>
 #include <future>
 
 namespace lenia {
@@ -19,7 +20,10 @@ class GalleryPanel {
     }
     void retry_save() {
         if (!write_error.empty() && !busy())
-            save();
+            pending_study ? save_study() : save();
+    }
+    void stop_study() {
+        study_stop = true;
     }
     void tick(Runner &, std::array<ViewSettings, 2> &);
     void draw(Runner &, const std::array<ViewSettings, 2> &, float dpi, bool closing);
@@ -32,6 +36,9 @@ class GalleryPanel {
         std::optional<GalleryEntry> entry;
         std::optional<GalleryPreview> preview;
         std::optional<State> state;
+        std::optional<BehaviorReport> report;
+        std::optional<GalleryStudies> studies;
+        std::string studies_source;
     };
     enum class Job {
         None,
@@ -39,7 +46,9 @@ class GalleryPanel {
         Select,
         Save,
         Edit,
-        Load
+        Load,
+        Study,
+        SaveStudy
     } job = Job::None;
     std::filesystem::path root;
     bool writable, opened = false, editing = false;
@@ -63,6 +72,16 @@ class GalleryPanel {
     int dimension_filter = 0, smoke_phase = 0;
     std::string smoke_signature;
     std::future<State> smoke_check;
+    BehaviorOptions study_options;
+    bool study_settings_open = true;
+    int study_backend = 0, study_index = 0;
+    GalleryStudies studies;
+    std::optional<BehaviorReport> pending_study;
+    std::atomic<bool> study_stop{false};
+    std::atomic<int> study_progress{0};
+    void begin_study();
+    void save_study();
+    void draw_study(float dpi, bool closing);
     void scan();
     void select(std::string);
     void begin_capture(Runner &, const std::array<ViewSettings, 2> &);

@@ -329,6 +329,12 @@ Translation find_translation(const State &a, const State &b) {
     fftw_execute(r.pi);
     size_t best = size_t(std::max_element(correlation.begin(), correlation.end()) - correlation.begin());
     Translation t;
+    double tolerance = std::abs(correlation[best]) * 1e-10 + 1e-30;
+    for (size_t i = 0; i < correlation.size(); ++i)
+        if (i != best && correlation[best] - correlation[i] <= tolerance) {
+            t.unique = false;
+            break;
+        }
     t.dx = int(best % c.width);
     t.dy = int((best / c.width) % c.height);
     t.dz = int(best / (size_t(c.width) * c.height));

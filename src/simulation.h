@@ -61,6 +61,7 @@ double recurrence_error(const State &, const State &, int dx, int dy, int dz);
 struct Translation {
     int dx = 0, dy = 0, dz = 0;
     double rms = 0;
+    bool unique = true; // False when correlation has tied peaks within numerical tolerance.
 };
 Translation find_translation(const State &, const State &);
 void save_state(const State &, const std::string &filename);

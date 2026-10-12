@@ -4,6 +4,7 @@ All fields and galleries are isolated. Existing windows and personal workspaces 
 """
 from pathlib import Path
 import argparse
+import csv
 import subprocess
 import tempfile
 
@@ -62,6 +63,13 @@ def exercise(root):
             assert text.startswith('LeniascopeGallery 2\n') and 'Smoke reference' in text and 'test, periodic' in text
             bmp = (entry / 'preview.bmp').read_bytes()
             assert bmp[:2] == b'BM' and len(bmp) == 54 + 384*288*4
+            studies = [p for p in (entry / 'studies').iterdir() if not p.name.startswith('.')]
+            assert len(studies) == 1
+            report = (studies[0] / 'report.txt').read_text()
+            assert report.startswith('LeniascopeBehavior 1\n') and entry.name in report
+            rows = list(csv.DictReader((studies[0] / 'samples.csv').open()))
+            assert [int(row['step']) for row in rows] == [0, 3, 6, 7]
+            assert float(rows[0]['raw_rms']) == 0 and float(rows[0]['aligned_rms']) == 0
             manifest = (profile / 'recovery-b/complete.txt').read_text().split()
             assert manifest[:6] == ['LeniascopeRecovery', '1', '2', '1', '1', str(active)]
             for i, dimension in enumerate((2, 3)):
@@ -71,7 +79,7 @@ def exercise(root):
                 assert len(a.split()) == len(b.split())
                 assert all(abs(float(x)-float(y)) < 1e-6 for x,y in zip(a.split(), b.split()))
             assert (case / 'ui-smoke.bmp').stat().st_size > 10000
-            print(f'PASS {backend} {active+2}D gallery GUI: exact capture/reload, preview, annotations, view and inactive session', flush=True)
+            print(f'PASS {backend} {active+2}D gallery GUI: exact capture/reload, saved behavior study, unchanged live/inactive fields, preview and view', flush=True)
 
 if args.output_dir:
     args.output_dir.resolve().mkdir(parents=True, exist_ok=False)

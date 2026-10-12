@@ -1,6 +1,10 @@
+#include "behavior.h"
+#include "file_integrity.h"
+#include "gallery.h"
 #include "gpu_solver.h"
 #include "numerics.h"
 #include "simulation.h"
+#include "study_backend.h"
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -29,10 +33,59 @@ int main(int argc, char **argv) {
                    "    [--sweep-mu 0.13,0.14,0.15]\n"
                    "compare first.lenia second.lenia  (best integer torus translation)\n"
                    "converge checkpoint.lenia [--steps 20] [--levels 4]  (CPU timestep study, CSV stdout)\n"
+                   "study checkpoint.lenia --output new-directory [--steps 1000] [--sample-every 20]\n"
+                   "    [--backend cpu|gpu|cuda] [--threshold 0.01] (behavior report and CSV; input "
+                   "unchanged)\n"
                    "GPU uses float32; CPU uses float64. Sweep outputs append .run-N.\n";
             return 0;
         }
         std::string command = argv[1];
+        if (command == "study") {
+            if (argc < 3)
+                throw std::invalid_argument("study needs a checkpoint path");
+            BehaviorOptions settings;
+            std::string backend = "cpu", output;
+            std::map<std::string, bool> seen;
+            for (int i = 3; i < argc; i += 2) {
+                std::string key = argv[i];
+                if (i + 1 >= argc || seen[key] ||
+                    (key != "--steps" && key != "--sample-every" && key != "--backend" &&
+                     key != "--threshold" && key != "--output"))
+                    throw std::invalid_argument("Unknown, duplicate or incomplete study option");
+                seen[key] = true;
+                std::string value = argv[i + 1];
+                size_t end = 0;
+                if (key == "--backend")
+                    backend = value;
+                else if (key == "--output")
+                    output = value;
+                else if (key == "--threshold") {
+                    settings.activity_threshold = std::stod(value, &end);
+                    if (end != value.size())
+                        throw std::invalid_argument("Invalid study threshold");
+                } else {
+                    int number = std::stoi(value, &end);
+                    if (end != value.size())
+                        throw std::invalid_argument("Invalid study integer");
+                    (key == "--steps" ? settings.steps : settings.sample_every) = number;
+                }
+            }
+            settings.validate();
+            if (output.empty() || std::filesystem::exists(std::filesystem::u8path(output)))
+                throw std::invalid_argument("Specify --output as a new report directory");
+            auto input = std::filesystem::u8path(argv[2]);
+            auto hash = file_checksum(input);
+            auto source = load_state(argv[2]);
+            if (file_checksum(input) != hash)
+                throw std::runtime_error("Study input changed while loading");
+            auto solver = study_solver(source, backend);
+            auto report = behavior_study(source, *solver, settings);
+            report.source_id = input.filename().u8string();
+            report.source_hash = hash;
+            save_behavior_files(std::filesystem::u8path(output), report);
+            std::cout << behavior_csv(report);
+            return 0;
+        }
         if (command == "converge") {
             if (argc < 3)
                 throw std::invalid_argument("converge needs a checkpoint path");

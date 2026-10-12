@@ -1,4 +1,5 @@
 #pragma once
+#include "behavior.h"
 #include "simulation.h"
 #include "view_settings.h"
 #include <filesystem>
@@ -35,4 +36,18 @@ State load_gallery_state(const std::filesystem::path &, const std::string &id);
 GalleryPreview load_gallery_preview(const std::filesystem::path &, const std::string &id);
 GalleryEntry annotate_gallery_entry(const std::filesystem::path &, const std::string &id,
                                     const GalleryNotes &);
+struct GalleryStudy {
+    std::string id;
+    BehaviorReport report;
+};
+struct GalleryStudies {
+    std::vector<GalleryStudy> entries;
+    std::vector<std::string> errors;
+};
+// Append-only reports live beneath an entry; its field, preview and annotations are untouched.
+GalleryStudy save_gallery_study(const std::filesystem::path &, const std::string &entry_id,
+                                const BehaviorReport &);
+GalleryStudies list_gallery_studies(const std::filesystem::path &, const std::string &entry_id);
+// Writes a new standalone report directory for CLI experiments; never overwrites an existing one.
+void save_behavior_files(const std::filesystem::path &destination, const BehaviorReport &);
 } // namespace lenia

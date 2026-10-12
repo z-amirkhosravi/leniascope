@@ -367,6 +367,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         }
         if (done)
             break;
+        if (close_requested)
+            gallery.stop_study();
         gallery.tick(runner, views);
         auto frame = runner.frame();
         if (options.gallery_smoke && frame && !gallery_smoke_done)

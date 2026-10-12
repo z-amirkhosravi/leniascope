@@ -95,6 +95,7 @@ Actual-window profiling on the same machine also sustained **120 and 240 steps/s
 - All 20 original palettes remain available, alongside Ocean / gold. A 4,096-entry GPU palette texture replaces per-pixel CPU segment searches. Interpolation is a display approximation, especially near discontinuities.
 - **Save state** writes a full 2D or 3D checkpoint. **Load state** pauses on the loaded state. **Export view** writes the rendered viewport as a BMP. The inspector scrolls on smaller windows; measurements include an activity plot and separate compute/display timings.
 - **Pattern gallery** keeps independent captures with previews, notes, tags and provenance. Browse or filter entries and restore a saved field with its view.
+- Its **Behavior study** tab evolves a separate copy of a saved pattern and records motion, shape mismatch and activity over a chosen duration, with persistent plots and CSV reports.
 - Camera, palettes, slice/volume settings, playback rate, compute backend, selected mode, and window size/maximization are remembered between launches. The activity plot starts afresh when a session is reset or loaded.
 
 ## Initialization and grid size
@@ -135,7 +136,7 @@ Open **Pattern gallery** in the inspector's **Experiment** section, then choose 
 
 The gallery starts empty. To import an existing checkpoint, load it in the laboratory and then capture it; select the CPU reference before importing a double-precision checkpoint if every saved digit must be retained. Search title/tags/notes or filter by dimension, select an entry to inspect its preview and provenance, then use **Load field + view**. Reloading restores the actual field, parameters, counters and view, paused; it does not regenerate from a seed. The inactive simulation session is preserved. Gallery reload automatically selects CPU when the saved values cannot be represented exactly by the current float32 GPU backend. Subsequent backend changes remain explicit numerical choices.
 
-Entries initially have the **Candidate** label. **Reference (your assessment)** is a manual label, not an automatic claim about stability or species. **Observed simulation time** records your reported observation duration; zero means unrecorded. It is separate from the field's simulation age. Displayed mean/minimum/maximum are measurements of the captured scalar field; no motion or morphology classifier is included yet. **Edit notes and labels** changes only annotations, preserving the checkpoint and preview.
+Entries initially have the **Candidate** label. **Reference (your assessment)** is a manual label, not an automatic claim about stability or species. **Observed simulation time** records your reported observation duration; zero means unrecorded. It is separate from the field's simulation age. Displayed mean/minimum/maximum are measurements of the captured scalar field; there is no automatic morphology or stability classifier. **Edit notes and labels** changes only annotations, preserving the checkpoint and preview.
 
 Provenance records the current parameters/backend and the initial seed recipe when known. It does not record the entire history of parameter or backend changes made before capture; use notes for those observations.
 
@@ -145,7 +146,31 @@ Use a native Windows directory for large experimental workspaces when possible. 
 
 Saving writes a private staging directory and commits it with one rename. Interrupted staging directories are ignored; malformed entries are reported without hiding valid ones. Checksums detect accidental checkpoint/preview corruption, and reload cross-checks the stored provenance and scalar measurements. These are integrity checks, not cryptographic authentication or guarantees against hardware failure. A damaged preview does not prevent loading an intact field. Only the workspace-owning window can write gallery entries. Catalog and file work runs in the background; capture/readback and preview creation can briefly delay a large-grid operation. Closing waits for accepted gallery work before taking the final workspace snapshot and reports write failures.
 
-The portable `src/gallery.*` store is separate from the ImGui interface in `src/gallery_panel.*`. Numerical stepping remains in the simulation worker. `python tools/test_gallery.py <GUI> <CLI> --cuda` exercises the real GUI capture/save/browse/reload flow for CPU, DirectCompute and CUDA in both dimensions, checking full checkpoint bytes, camera settings and the inactive session. Omit `--cuda` for a standard build. The application's `--gallery-smoke` test mode requires an explicit isolated `--workspace`.
+The portable `src/gallery.*` store is separate from the ImGui interface in `src/gallery_panel.*`. Live numerical stepping remains in the simulation worker. `python tools/test_gallery.py <GUI> <CLI> --cuda` exercises the real GUI capture/save/browse/reload and behavior-study flow for CPU, DirectCompute and CUDA in both dimensions, checking full checkpoint bytes, camera settings, the inactive session and persisted reports. Omit `--cuda` for a standard build. The application's `--gallery-smoke` test mode requires an explicit isolated `--workspace`.
+
+### Behavior studies
+
+Select an entry, open **Behavior study**, choose the number of steps, sampling interval and backend, then **Run study**. The default measures 1,000 steps at intervals of 20. The saved field, annotations and current simulation remain unchanged: a background job constructs its own solver from the saved checkpoint. Backend selection is explicit and failures are reported without switching arithmetic. Running a study can compete with live playback for GPU/CPU resources; pausing playback is useful for large fields. FFTW computes translation measurements on the CPU even when evolution uses a GPU.
+
+**Stop and keep partial report** records the completed endpoint. Closing the application requests the same stop and waits for the current step/measurement and report save before normal workspace recovery. Saving failures retain the report for retry; discarding it is an explicit action. Studies require the window that owns the workspace. The plots and report selector reappear when the entry is reopened; multiple runs are retained independently.
+
+Each measurement compares the evolved field `A_t` with its starting reference `A_0`:
+
+- **Mean activity** is the mean scalar value. **Fraction above activity threshold** counts cells strictly above the selected threshold; that threshold changes the measurement only.
+- **Raw RMS** measures pointwise difference. **Aligned RMS** minimizes that difference over integer periodic translations, using FFT cross-correlation. The reported displacement compares `A_t(x + d)` with `A_0(x)`.
+- **Relative mismatch** divides aligned RMS by the starting field's RMS. This prevents a large empty background from making a localized organism's deformation look artificially small. It is undefined for an empty reference.
+
+The reference is the solver's initial snapshot. Converting a CPU checkpoint to a float32 GPU solver can round it; **Initial rounding RMS** records that separate change. Empty/near-constant fields and tied correlation peaks do not receive a unique displacement. Shifts are modulo the grid and describe the whole field, not individual organisms; there is no unwrapped path or velocity estimate. Rotation and subcell shifts are not aligned. Low sampled mismatch is evidence of a return over that duration, not proof of periodicity or stability. Short periods can be missed by a coarse sampling interval. The graphs use sample index horizontally, with exact step/time in hover text, since the last interval can be shorter.
+
+Up to 256 measured lags plus the starting sample are retained. The endpoint is included even when it falls between intervals. Each study is saved under `gallery/<entry>/studies/<study>/` as `report.txt` (versioned parameters, source checksum, numerical backend and measurements) and `samples.csv` (one row per sample). **Open report folder** exposes both files. Undefined relative mismatch or displacement fields are blank in CSV. Copy the whole entry directory to back up its reports too. Writes use a staging directory and rename; existing reports and source fields are never overwritten. Invalid reports are listed separately without hiding valid ones.
+
+The CLI provides the same measurements for any checkpoint, without requiring a gallery:
+
+```powershell
+.\x64\Cuda\Release\LeniascopeCli.exe study orbium.lenia --steps 4000 --sample-every 20 --backend cuda --threshold 0.01 --output orbium-study
+```
+
+The output directory must be new. It receives the report and CSV; CSV is also written to stdout. The default backend is CPU. Report wall time includes sampling and correlation but excludes solver construction and input loading. The scalar measurements live in portable `src/behavior.*`; they do not feed back into evolution.
 
 ## Workspace recovery
 
@@ -242,7 +267,9 @@ These are short local headless measurements, not universal speedups or display f
 
 ## Research direction and next work
 
-The gallery now stores actual fields with previews, model parameters, provenance, numerical backend and scalar measurements. The next step is to curate useful examples and attach repeatable behavior measurements—motion and recurrence over a specified duration—to those saved starting points. A seed recipe alone cannot stand in for a discovered organism. Candidate/reference labels are currently manual; they are not proofs of stability. This provides repeatable starting points for numerical comparisons and later automated searches. The items below are research plans, not implemented classifiers or established explanations.
+The gallery stores actual fields with previews, model parameters, provenance and numerical backend, and now attaches repeatable behavior measurements over a specified duration. A seed recipe alone cannot stand in for a discovered organism. Candidate/reference labels remain manual; they are not proofs of stability. Next, use the saved single Orbium, separated pairs and transient conjoined pairs to compare trajectories and refine measurement intervals. The items below are research plans, not implemented classifiers or established explanations.
+
+An experimental field editor should start with paused selection, copy, rotation, paste and manual insertion of a shaped random patch. It should offer undo and record source patterns and transformations, so a constructed pair can be compared at controlled separations and orientations without losing the original. Revolving a 2D pattern around a chosen movement axis into a 3D field is a later extension: its axis, interpolation, spatial scale and 3D model parameters need explicit choices. That construction supplies an initial condition, without assuming the 2D dynamics or organism will survive in 3D.
 
 Orbium work should distinguish **existence**, **stability**, and **accessibility from a particular seeding distribution**. Failure to find an organism by random seeding does not settle the first two. Compare classic and smooth models from the same saved organisms, measure motion and recurrence, and track the activity of expanding fronts. The current Smooth reaction is a different birth/death law, not a controlled approximation to classic clipping; a controlled smoothing experiment needs a separately defined family and convergence checks. Likewise, carrying the same radial kernel profile into 3D changes the weight of spherical shells. Kernel geometry and discretization should be explicit experimental variables. Published 3D Lenia organisms already exist; any novelty claim needs a precise definition and literature comparison, for example with Chan's [higher-dimensional study](https://arxiv.org/abs/2005.03742).
 

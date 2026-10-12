@@ -245,4 +245,61 @@ GalleryEntry annotate_gallery_entry(const fs::path &root, const std::string &id,
     }
     return e;
 }
+void save_behavior_files(const fs::path &destination, const BehaviorReport &report) {
+    auto metadata = encode_behavior(report), csv = behavior_csv(report);
+    require(!fs::exists(destination), "Study destination already exists");
+    auto parent = destination.parent_path();
+    if (!parent.empty())
+        fs::create_directories(parent);
+    auto staging = parent / (".study-writing-" + identity());
+    require(fs::create_directory(staging), "Cannot create study staging directory");
+    try {
+        write(staging / "report.txt", metadata.data(), metadata.size());
+        write(staging / "samples.csv", csv.data(), csv.size());
+        fs::rename(staging, destination);
+    } catch (...) {
+        std::error_code ignored;
+        fs::remove_all(staging, ignored);
+        throw;
+    }
+}
+GalleryStudy save_gallery_study(const fs::path &root, const std::string &id, const BehaviorReport &report) {
+    auto entry = read_gallery_entry(root, id);
+    require(report.source_id == id && report.source_hash == entry.field_hash &&
+                report.config == entry.state.config && report.initial_step == entry.state.steps &&
+                report.seed == entry.state.seed && report.initial_time == entry.state.time,
+            "Study does not match its gallery source");
+    GalleryStudy saved{identity(), report};
+    save_behavior_files(directory(root, id) / "studies" / saved.id, report);
+    return saved;
+}
+GalleryStudies list_gallery_studies(const fs::path &root, const std::string &id) {
+    auto entry = read_gallery_entry(root, id);
+    auto path = directory(root, id) / "studies";
+    GalleryStudies result;
+    if (!fs::exists(path))
+        return result;
+    for (const auto &dir : fs::directory_iterator(path)) {
+        auto study_id = dir.path().filename().u8string();
+        if (!valid_id(study_id) || !dir.is_directory())
+            continue;
+        try {
+            auto metadata = read(dir.path() / "report.txt", 131072);
+            auto report = decode_behavior({metadata.begin(), metadata.end()});
+            require(report.source_id == id && report.source_hash == entry.field_hash &&
+                        report.config == entry.state.config && report.initial_step == entry.state.steps &&
+                        report.initial_time == entry.state.time && report.seed == entry.state.seed,
+                    "Study source no longer matches entry");
+            auto csv = read(dir.path() / "samples.csv", 131072);
+            require(std::string(csv.begin(), csv.end()) == behavior_csv(report),
+                    "Study CSV disagrees with report");
+            result.entries.push_back({study_id, std::move(report)});
+        } catch (const std::exception &e) {
+            result.errors.push_back(study_id + ": " + e.what());
+        }
+    }
+    std::sort(result.entries.begin(), result.entries.end(),
+              [](const auto &a, const auto &b) { return a.id > b.id; });
+    return result;
+}
 } // namespace lenia

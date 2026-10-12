@@ -134,4 +134,23 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
             records = list(csv.DictReader(trace.open()))
             assert all(r['backend'] == backend and r['seed_patches'] == '23' for r in records)
         print('PASS CUDA/DirectCompute CLI checkpoints, exact continuation and CSV backend labels')
+    for backend in ['cpu'] + (['gpu', 'cuda'] if '--cuda' in sys.argv[2:] else []):
+        report_dir = root / f'study-{backend}'
+        stdout = run('study', arg_path(custom), '--steps', 7, '--sample-every', 3,
+                     '--backend', backend, '--output', arg_path(report_dir))
+        rows = list(csv.DictReader(io.StringIO(stdout)))
+        assert [int(r['step']) for r in rows] == [0,3,6,7]
+        assert abs(float(rows[-1]['elapsed']) - .7) < 1e-14
+        assert stdout == (report_dir / 'samples.csv').read_text()
+        metadata = (report_dir / 'report.txt').read_text()
+        assert metadata.startswith('LeniascopeBehavior 1\n') and custom.name in metadata
+        assert custom.read_bytes() == custom_data
+        run('study', arg_path(custom), '--output', arg_path(report_dir), succeeds=False)
+        assert (report_dir / 'report.txt').read_text() == metadata
+    for args in [('--steps',0), ('--steps','7x'), ('--sample-every',0), ('--threshold','nan'),
+                 ('--backend','unknown'), ('--steps',1000001), ('--sample-every',1), ('--unknown',1)]:
+        destination = root / 'invalid-study'
+        run('study', arg_path(custom), '--output', arg_path(destination), *args, succeeds=False)
+        assert not destination.exists()
+    print('PASS behavior CLI sampling, backend provenance, source preservation and output validation')
     print('PASS seed layouts/recipes, v2/v3 migration, CSV metadata; CLI malformed checkpoints, resume equivalence, recurrence, sweep CSV, timestep study, invalid options')

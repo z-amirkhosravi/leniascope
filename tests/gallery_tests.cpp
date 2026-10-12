@@ -149,6 +149,29 @@ void gallery_tests(bool cpu_only) {
     auto uniform = save_gallery_entry(root, constant, view, notes, bmp);
     check(load_gallery_state(root, uniform.id).values == constant.values,
           "Uniform-field mean rounding rejected entry");
+    auto before_study = bytes(root / uniform.id / "entry.txt");
+    auto before_field = bytes(root / uniform.id / "state.lenia");
+    CpuSolver study_solver(constant);
+    auto study = behavior_study(constant, study_solver, {7, 3, .01});
+    study.source_id = uniform.id;
+    study.source_hash = uniform.field_hash;
+    auto saved_study = save_gallery_study(root, uniform.id, study);
+    save_gallery_study(root, uniform.id, study);
+    auto studies = list_gallery_studies(root, uniform.id);
+    check(studies.entries.size() == 2 && studies.errors.empty() &&
+              encode_behavior(studies.entries.front().report) == encode_behavior(study) &&
+              bytes(root / uniform.id / "entry.txt") == before_study &&
+              bytes(root / uniform.id / "state.lenia") == before_field,
+          "Behavior study overwrote source or lost its report");
+    auto wrong_source = study;
+    ++wrong_source.source_hash;
+    rejects([&] { save_gallery_study(root, uniform.id, wrong_source); });
+    auto report_dir = root / uniform.id / "studies" / saved_study.id;
+    rejects([&] { save_behavior_files(report_dir, study); });
+    write(report_dir / "samples.csv", "corrupt");
+    studies = list_gallery_studies(root, uniform.id);
+    check(studies.entries.size() == 1 && studies.errors.size() == 1,
+          "Corrupt study hid another valid report");
     // A version-1 gallery points at a version-3 checkpoint. Editing its notes must keep
     // that checkpoint intact, even though newly written metadata uses the new schema.
     auto legacy = save_gallery_entry(root, constant, view, {"Legacy fixture", "", ""}, bmp);

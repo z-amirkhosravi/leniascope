@@ -74,6 +74,7 @@ class GalleryPanel {
     std::future<State> smoke_check;
     BehaviorOptions study_options;
     bool study_settings_open = true;
+    bool study_zoom = false;
     int study_backend = 0, study_index = 0;
     GalleryStudies studies;
     std::optional<BehaviorReport> pending_study;

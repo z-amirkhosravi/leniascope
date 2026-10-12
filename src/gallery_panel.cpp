@@ -3,6 +3,7 @@
 #include "study_backend.h"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
@@ -277,41 +278,66 @@ void GalleryPanel::draw_study(float dpi, bool closing) {
     ImGui::TextWrapped("%s", r.backend.c_str());
     ImGui::Text("Measured t = 0..%.6g; %zu samples", last.elapsed, r.samples.size());
     ImGui::Text("Initial rounding RMS: %.6g", r.initial_rounding_rms);
-    std::vector<float> mismatch, activity, coverage;
-    bool mismatch_plottable = true;
-    for (const auto &s : r.samples) {
-        mismatch_plottable &= s.relative_rms <= FLT_MAX;
-        mismatch.push_back(float(std::min(s.relative_rms, double(FLT_MAX))));
-        activity.push_back(float(s.mean));
-        coverage.push_back(float(s.active_fraction));
+    if (ImGui::CollapsingHeader("How to read these plots")) {
+        ImGui::TextWrapped(
+            "Mismatch measures accumulated difference from the starting field after one whole-field "
+            "translation. 1%% means RMS difference is 1%% of the starting field's RMS; it is not "
+            "the fraction of cells that changed.");
+        ImGui::TextWrapped(
+            "Default Y scales start at 0 and extend to at least 100%%. Magnification stretches "
+            "each plot to its own observed range. Read the Y labels before comparing heights.");
     }
+    ImGui::Checkbox("Magnify variations (independent Y scales)", &study_zoom);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Magnification fills each plot's height, even for very small changes.\n"
+                          "Uncheck to restore zero-based scales extending to at least 100%%.");
     // A stopped run may end with a shorter interval; the horizontal axis is sample index.
-    ImGui::TextDisabled("Plots use sample index; hover for the recorded lag.");
-    auto plot = [&](const char *id, const char *title, const std::vector<float> &values) {
-        ImGui::PlotLines(id, values.data(), int(values.size()), 0, title, FLT_MAX, FLT_MAX, {-1, 75 * dpi});
-        if (ImGui::IsItemHovered() && !values.empty()) {
-            float fraction = (ImGui::GetMousePos().x - ImGui::GetItemRectMin().x) /
-                             std::max(1.f, ImGui::GetItemRectSize().x);
-            int i = std::clamp(int(fraction * (values.size() - 1)), 0, int(values.size()) - 1);
-            ImGui::SetTooltip("Sample %d / step %d / lag %.6g / value %.6g", i, r.samples[i].step,
-                              r.samples[i].elapsed, double(values[i]));
+    ImGui::TextDisabled("X: samples 0..%zu (t = 0..%.6g). Hover for exact values.", r.samples.size() - 1,
+                        last.elapsed);
+    auto plot = [&](const char *id, const char *title, double BehaviorSample::*metric) {
+        auto range = std::minmax_element(r.samples.begin(), r.samples.end(),
+                                         [&](const auto &a, const auto &b) { return a.*metric < b.*metric; });
+        double minimum = (*range.first).*metric, maximum = (*range.second).*metric;
+        double low = study_zoom ? minimum : 0, high = study_zoom ? maximum : std::max(1., maximum);
+        if (high == low) {
+            double padding = std::max(1e-6, std::abs(low) * .05);
+            low = std::max(0., low - padding);
+            high += padding;
+        }
+        // Normalize in double before converting to float, preserving small variations when magnified.
+        std::vector<float> values;
+        for (const auto &s : r.samples)
+            values.push_back(float((s.*metric - low) / (high - low)));
+        ImGui::TextWrapped("%s", title);
+        ImGui::Text("Start %.6g%% -> final %.6g%%; peak %.6g%%", 100 * (r.samples.front().*metric),
+                    100 * (last.*metric), 100 * maximum);
+        char scale[96];
+        std::snprintf(scale, sizeof scale, "Y: %.6g%% to %.6g%%", 100 * low, 100 * high);
+        ImGui::PlotLines(id, values.data(), int(values.size()), 0, scale, 0, 1, {-1, 75 * dpi});
+        if (ImGui::IsItemHovered()) {
+            float padding = ImGui::GetStyle().FramePadding.x;
+            float fraction = (ImGui::GetMousePos().x - ImGui::GetItemRectMin().x - padding) /
+                             std::max(1.f, ImGui::GetItemRectSize().x - 2 * padding);
+            int i = std::clamp(int(std::round(fraction * (values.size() - 1))), 0, int(values.size()) - 1);
+            const auto &s = r.samples[i];
+            ImGui::SetTooltip("Sample %d / step %d / lag %.6g\nValue %.9g%% (ratio %.9g)", i, s.step,
+                              s.elapsed, 100 * (s.*metric), s.*metric);
         }
     };
-    if (r.reference_rms > 0 && mismatch_plottable)
-        plot("##shape", "Relative mismatch after translation", mismatch);
-    else if (r.reference_rms > 0)
-        ImGui::TextWrapped("Relative mismatch exceeds the plot's range. Exact values are in the CSV.");
+    if (r.reference_rms > 0)
+        plot("##shape", "Relative RMS mismatch from start", &BehaviorSample::relative_rms);
     else
         ImGui::TextWrapped("The reference is empty: normalized mismatch is undefined.");
-    plot("##activity", "Mean activity", activity);
-    plot("##coverage", "Fraction above activity threshold", coverage);
+    plot("##activity", "Mean activity", &BehaviorSample::mean);
+    plot("##coverage", "Fraction above activity threshold", &BehaviorSample::active_fraction);
     ImGui::Text("Threshold %.6g; final aligned RMS %.6g", r.options.activity_threshold, last.aligned_rms);
     if (last.shift_valid)
         ImGui::Text("Final shift from start: (%d, %d, %d) cells", last.dx, last.dy, last.dz);
     else
         ImGui::TextWrapped("Final shift is undefined or ambiguous (flat field or tied correlation peaks).");
     ImGui::TextWrapped("Shift is modulo the grid, for the whole field. Low mismatch is a sampled return, not "
-                       "proof of periodicity or stability. No individual organism is tracked.");
+                       "proof of periodicity or stability. Integer-cell alignment can itself produce "
+                       "oscillations as a shape moves between cells. No individual organism is tracked.");
     if (ImGui::Button("Open report folder")) {
         auto path = root / selected->id / "studies" / saved.id;
         if (reinterpret_cast<INT_PTR>(

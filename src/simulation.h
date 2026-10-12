@@ -45,6 +45,8 @@ struct State {
     // Unknown for older/imported or externally constructed fields.
     std::optional<SeedSettings> initialization;
     int initialization_radius = 0;
+    // Bounded construction history for manually edited fields, retained through evolution.
+    std::string edits;
 };
 struct Timings {
     double forward_ms = 0, multiply_ms = 0, inverse_ms = 0, update_ms = 0, total_ms = 0;

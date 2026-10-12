@@ -8,7 +8,7 @@ option(LENIA_ENABLE_CUDA "Build the optional Windows CUDA/cuFFT backend (CUDA 12
 if(LENIA_ENABLE_CUDA AND NOT WIN32)
     message(FATAL_ERROR "The optional CUDA display backend currently requires Windows/D3D11")
 endif()
-add_library(lenia_core src/simulation.cpp src/workspace.cpp src/numerics.cpp src/gallery.cpp src/behavior.cpp)
+add_library(lenia_core src/simulation.cpp src/workspace.cpp src/numerics.cpp src/gallery.cpp src/behavior.cpp src/field_edit.cpp)
 target_include_directories(lenia_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(lenia_core PUBLIC Threads::Threads)
 if(WIN32)
@@ -34,7 +34,7 @@ if(WIN32)
     endif()
     add_executable(LeniascopeCli src/cli.cpp)
     target_link_libraries(LeniascopeCli PRIVATE lenia_gpu)
-    add_executable(Leniascope WIN32 src/application.cpp src/desktop_workspace.cpp src/gallery_panel.cpp src/renderer.cpp cmap.cpp
+    add_executable(Leniascope WIN32 src/application.cpp src/desktop_workspace.cpp src/gallery_panel.cpp src/editor_panel.cpp src/renderer.cpp cmap.cpp
         third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
         third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
         third_party/imgui/backends/imgui_impl_dx11.cpp
@@ -73,7 +73,7 @@ else()
     target_link_libraries(lenia_core PUBLIC "${FFTW_LIBRARY}")
 endif()
 if(BUILD_TESTING)
-    add_executable(CoreTests tests/core_tests.cpp tests/workspace_tests.cpp tests/numerical_tests.cpp tests/seed_tests.cpp tests/gallery_tests.cpp tests/behavior_tests.cpp)
+    add_executable(CoreTests tests/core_tests.cpp tests/workspace_tests.cpp tests/numerical_tests.cpp tests/seed_tests.cpp tests/gallery_tests.cpp tests/behavior_tests.cpp tests/field_edit_tests.cpp)
     target_link_libraries(CoreTests PRIVATE lenia_core)
     if(WIN32)
         target_link_libraries(CoreTests PRIVATE lenia_gpu shell32)

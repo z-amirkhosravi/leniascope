@@ -40,6 +40,8 @@ double uniform(uint64_t &s) {
 }
 void validate_values(const State &s) {
     s.config.validate();
+    if (s.edits.size() > 16384 || s.edits.find('\0') != std::string::npos)
+        throw std::runtime_error("Invalid field construction history");
     if (s.initialization) {
         s.initialization->validate();
         Config initial = s.config;
@@ -473,7 +475,7 @@ void save_state(const State &s, const std::string &filename) {
     std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
     if (!f)
         throw std::runtime_error("Cannot open checkpoint for writing");
-    f.write("LeniaS4\0", 8);
+    f.write(s.edits.empty() ? "LeniaS4\0" : "LeniaS5\0", 8);
     const auto &c = s.config;
     for (int v : {c.width, c.height, c.depth, c.radius})
         write(f, int32_t(v));
@@ -499,6 +501,10 @@ void save_state(const State &s, const std::string &filename) {
         write(f, uint32_t(r.layout));
         for (double v : {r.spread, r.angle, r.elevation})
             write(f, v);
+    }
+    if (!s.edits.empty()) {
+        write(f, uint32_t(s.edits.size()));
+        f.write(s.edits.data(), s.edits.size());
     }
     f.write(reinterpret_cast<const char *>(s.values.data()), s.values.size() * sizeof(double));
     if (!f)
@@ -531,7 +537,8 @@ State load_state(const std::string &filename) {
         s.backend = "Legacy v1 import";
     } else if (std::memcmp(signature.data(), "LeniaS2\0", 8) == 0 ||
                std::memcmp(signature.data(), "LeniaS3\0", 8) == 0 ||
-               std::memcmp(signature.data(), "LeniaS4\0", 8) == 0) {
+               std::memcmp(signature.data(), "LeniaS4\0", 8) == 0 ||
+               std::memcmp(signature.data(), "LeniaS5\0", 8) == 0) {
         int32_t dims[4];
         for (auto &v : dims)
             read(f, v);
@@ -589,6 +596,15 @@ State load_state(const std::string &filename) {
                 r.validate();
                 s.initialization = r;
             }
+        }
+        if (signature[6] >= '5') {
+            uint32_t length;
+            read(f, length);
+            if (length > 16384)
+                throw std::runtime_error("Field construction history is too long");
+            s.edits.resize(length);
+            if (!f.read(s.edits.data(), length))
+                throw std::runtime_error("Truncated field construction history");
         }
     } else
         throw std::runtime_error("Unknown checkpoint format");

@@ -602,6 +602,8 @@ void GalleryPanel::draw(Runner &runner, const std::array<ViewSettings, 2> &views
                                 e.measures.maximum);
                     ImGui::TextWrapped("Captured with: %s", s.backend.c_str());
                     ImGui::Text("Seed %llu", static_cast<unsigned long long>(s.seed));
+                    if (!s.edits.empty() && ImGui::CollapsingHeader("Field construction"))
+                        ImGui::TextUnformatted(s.edits.c_str());
                     if (s.initialization) {
                         auto &a = *s.initialization;
                         ImGui::TextWrapped("%d patches; sides %.3g - %.3g x R%d; values %.3g - %.3g",

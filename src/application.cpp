@@ -2,6 +2,7 @@
 #include "backends/imgui_impl_dx11.h"
 #include "backends/imgui_impl_win32.h"
 #include "desktop_workspace.h"
+#include "editor_panel.h"
 #include "gallery_panel.h"
 #include "imgui.h"
 #include "renderer.h"
@@ -271,6 +272,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     GalleryPanel gallery(access ? access->directory / L"gallery" : std::filesystem::path{},
                          access && access->writable(), gpu_context);
     bool gallery_smoke_done = false;
+    EditorPanel editor(gpu_context);
+    bool editor_smoke_done = false;
     bool done = false, dirty_config = false;
     Config edit;
     uint64_t shown = 0, seed = 1, shown_generation = UINT64_MAX;
@@ -370,6 +373,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         if (close_requested)
             gallery.stop_study();
         gallery.tick(runner, views);
+        editor.tick();
         auto frame = runner.frame();
         if (options.gallery_smoke && frame && !gallery_smoke_done)
             gallery_smoke_done = gallery.smoke(runner, views);
@@ -401,7 +405,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17 * dpi);
             requested_dpi = 0;
         }
-        if (close_requested && closing_stage == 0 && !gallery.busy()) {
+        if (close_requested && closing_stage == 0 && !gallery.busy() && !editor.active()) {
             gallery_trace("close: capturing workspace");
             try {
                 closing_snapshot = runner.pause_and_snapshot();
@@ -453,6 +457,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 continue;
         }
         frame = runner.frame(); // Fetch the newest completed step after the presentation wait.
+        if (options.editor_smoke && frame && !editor_smoke_done)
+            editor_smoke_done = editor.smoke(runner, views[0]);
         bool is_volume = frame ? frame->state.config.depth > 1 : true;
         auto &view = views[is_volume];
         auto &seed_settings = preferences.seeds[is_volume];
@@ -503,11 +509,11 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         ImGui::SameLine();
         ImGui::TextDisabled(" /  laboratory");
         ImGui::SameLine(300 * dpi);
-        ImGui::BeginDisabled(close_requested || !frame);
+        ImGui::BeginDisabled(close_requested || !frame || editor.active());
         try {
             if (ImGui::Button(frame && frame->running ? "Pause" : "Play", {88 * dpi, 0}) ||
-                (frame && !close_requested && !gallery.active() && ImGui::IsKeyPressed(ImGuiKey_Space) &&
-                 !io.WantTextInput))
+                (frame && !close_requested && !gallery.active() && !editor.active() &&
+                 ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
                 runner.play(!(frame && frame->running));
             ImGui::SameLine();
             if (ImGui::Button("Step"))
@@ -759,6 +765,12 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             ImGui::TextDisabled("EXPERIMENT");
             if (ImGui::Button("Pattern gallery", {-1, 0}))
                 gallery.open();
+            ImGui::BeginDisabled(is_volume);
+            if (ImGui::Button("Edit 2D field", {-1, 0}))
+                editor.open(runner, views[0]);
+            ImGui::EndDisabled();
+            if (frame && !frame->state.edits.empty() && ImGui::CollapsingHeader("Field construction"))
+                ImGui::TextUnformatted(frame->state.edits.c_str());
             if (ImGui::CollapsingHeader("Measurements")) {
                 if (!history.empty())
                     ImGui::PlotLines("##mean", history.data(), int(history.size()), 0, "Mean activity", 0,
@@ -898,6 +910,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         }
         ImGui::End();
         gallery.draw(runner, views, dpi, close_requested);
+        editor.draw(runner, dpi, close_requested);
         ImGui::Render();
         HRESULT present;
         double present_ms = 0;
@@ -908,8 +921,11 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             const float clear[] = {.04f, .05f, .07f, 1};
             context->ClearRenderTargetView(screen.Get(), clear);
             ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+            if (options.editor_smoke && editor.smoke_preview_ready())
+                save_backbuffer(device.Get(), context.Get(), swap.Get(), "editor-ui-smoke.bmp");
             if (smoke && frame && (!options.gallery_smoke || gallery_smoke_done) &&
-                (!options.profile || frame->running) && ++smoke_frames == (options.profile ? 330 : 5)) {
+                (!options.editor_smoke || editor_smoke_done) && (!options.profile || frame->running) &&
+                ++smoke_frames == (options.profile ? 330 : 5)) {
                 save_backbuffer(device.Get(), context.Get(), swap.Get(), "ui-smoke.bmp");
                 renderer.export_bmp("volume-smoke.bmp");
                 smoke_exported = true;
@@ -970,7 +986,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command, int show) {
     } catch (const std::exception &e) {
         std::ofstream("leniascope-error.log") << e.what();
         if (!std::wcsstr(command, L"--smoke") && !std::wcsstr(command, L"--gallery-smoke") &&
-            !std::wcsstr(command, L"--profile"))
+            !std::wcsstr(command, L"--editor-smoke") && !std::wcsstr(command, L"--profile"))
             MessageBoxA(nullptr, e.what(), "Leniascope", MB_ICONERROR);
         return 1;
     }

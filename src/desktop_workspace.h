@@ -4,7 +4,8 @@
 #include <string>
 namespace lenia {
 struct StartupOptions {
-    bool smoke = false, profile = false, cpu_transfer = false, cuda = false, gallery_smoke = false;
+    bool smoke = false, profile = false, cpu_transfer = false, cuda = false, gallery_smoke = false,
+         editor_smoke = false;
     std::filesystem::path workspace;
 };
 StartupOptions startup_options();

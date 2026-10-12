@@ -73,6 +73,8 @@ std::string summary(const State &s) {
             << ' ' << a.value_min << ' ' << a.value_max << ' ' << uint32_t(a.layout) << ' ' << a.spread << ' '
             << a.angle << ' ' << a.elevation;
     }
+    if (!s.edits.empty())
+        out << '\n' << std::quoted(s.edits);
     return out.str();
 }
 std::string encode(const GalleryEntry &e) {
@@ -82,7 +84,7 @@ std::string encode(const GalleryEntry &e) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
     auto &a = e.annotation;
-    out << std::setprecision(17) << "LeniascopeGallery 2\n"
+    out << std::setprecision(17) << "LeniascopeGallery " << (e.state.edits.empty() ? 2 : 3) << '\n'
         << e.created << ' ' << e.field_hash << ' ' << e.preview_hash << '\n'
         << std::quoted(a.title) << '\n'
         << std::quoted(a.tags) << '\n'
@@ -111,7 +113,7 @@ GalleryPreview decode_preview(const std::vector<uint8_t> &bmp) {
 } // namespace
 GalleryEntry read_gallery_entry(const fs::path &root, const std::string &id) {
     auto dir = directory(root, id);
-    auto bytes = read(dir / "entry.txt", 32768);
+    auto bytes = read(dir / "entry.txt", 65536);
     std::istringstream in(std::string(bytes.begin(), bytes.end()));
     in.imbue(std::locale::classic());
     GalleryEntry e;
@@ -138,8 +140,12 @@ GalleryEntry read_gallery_entry(const fs::path &root, const std::string &id) {
         r.validate();
         require(s.initialization_radius > 0 && s.initialization_radius <= 4096, "Invalid seed radius");
     }
+    if (version >= 3)
+        in >> std::quoted(s.edits);
+    require(s.edits.size() <= 16384 && s.edits.find('\0') == std::string::npos,
+            "Invalid field construction history");
     in >> e.measures.mean >> e.measures.minimum >> e.measures.maximum >> std::quoted(prefs);
-    require(bool(in) && magic == "LeniascopeGallery" && (version == 1 || version == 2) && e.created > 0,
+    require(bool(in) && magic == "LeniascopeGallery" && (version >= 1 && version <= 3) && e.created > 0,
             "Invalid gallery metadata");
     in >> std::ws;
     require(in.eof(), "Unexpected gallery metadata");
@@ -190,7 +196,8 @@ GalleryEntry save_gallery_entry(const fs::path &root, const State &s, const View
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
             .count();
     e.measures = measure(s.values);
-    e.state = {s.config, {}, s.seed, s.steps, s.time, s.backend, s.initialization, s.initialization_radius};
+    e.state = {s.config, {}, s.seed, s.steps, s.time, s.backend, s.initialization, s.initialization_radius,
+               s.edits};
     encode(e); // Validate view and annotations before disk writes.
     fs::create_directories(root);
     auto staging = root / (".writing-" + e.id), dest = directory(root, e.id);
@@ -213,7 +220,7 @@ GalleryEntry save_gallery_entry(const fs::path &root, const State &s, const View
 State load_gallery_state(const fs::path &root, const std::string &id) {
     auto e = read_gallery_entry(root, id);
     auto file = directory(root, id) / "state.lenia";
-    require(fs::file_size(file) <= e.state.config.count() * sizeof(double) + 4096,
+    require(fs::file_size(file) <= e.state.config.count() * sizeof(double) + 32768,
             "Gallery checkpoint is too large");
     require(file_checksum(file) == e.field_hash, "Gallery checkpoint checksum mismatch");
     auto s = load_state(file.u8string());

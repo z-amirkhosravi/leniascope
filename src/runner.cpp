@@ -236,8 +236,8 @@ std::future<void> Runner::restore(State state) {
             volume = v;
             ++generation;
             publish();
-            set_message(needs_double ? "Loaded gallery field exactly; CPU selected to preserve float64 values"
-                                     : "Loaded gallery field; paused");
+            set_message(needs_double ? "Restored field exactly; CPU selected to preserve float64 values"
+                                     : "Restored field; paused");
             promise->set_value();
         } catch (...) {
             promise->set_exception(std::current_exception());

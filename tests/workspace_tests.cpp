@@ -95,7 +95,9 @@ void workspace_tests() {
     }
     check(rejected, "NaN workspace settings accepted");
     SessionSnapshot snapshot;
-    snapshot.states[0] = std::make_shared<State>(random_state({16, 8, 1, 3}, 17));
+    auto edited = random_state({16, 8, 1, 3}, 17);
+    edited.edits = "Field edit v1; recovery fixture\n";
+    snapshot.states[0] = std::make_shared<State>(edited);
     snapshot.states[1] = std::make_shared<State>(random_state({8, 8, 8, 3}, 29));
     {
         WorkspaceWriter writer(directory);
@@ -104,6 +106,7 @@ void workspace_tests() {
         check(writer.status().error.empty(), "Initial workspace write failed");
         auto loaded = restore_workspace(directory);
         check(loaded.revision == 1 && loaded.states[0]->values == snapshot.states[0]->values &&
+                  loaded.states[0]->edits == edited.edits &&
                   loaded.states[1]->values == snapshot.states[1]->values &&
                   encode_preferences(loaded.preferences) == encoded,
               "Workspace sessions round trip");

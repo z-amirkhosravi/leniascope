@@ -149,6 +149,16 @@ void gallery_tests(bool cpu_only) {
     auto uniform = save_gallery_entry(root, constant, view, notes, bmp);
     check(load_gallery_state(root, uniform.id).values == constant.values,
           "Uniform-field mean rounding rejected entry");
+    auto constructed = constant;
+    constructed.edits = "Field edit v1; parent=fixture\nCopy \"organism\"; rotate 17 degrees\n";
+    auto construction = save_gallery_entry(root, constructed, view, notes, bmp);
+    check(read_gallery_entry(root, construction.id).state.edits == constructed.edits &&
+              load_gallery_state(root, construction.id).edits == constructed.edits &&
+              bytes(root / construction.id / "entry.txt").find("LeniascopeGallery 3") == 0,
+          "Gallery lost edited field provenance");
+    annotate_gallery_entry(root, construction.id, {"Edited field", "", "New notes"});
+    check(load_gallery_state(root, construction.id).edits == constructed.edits,
+          "Gallery annotation lost construction history");
     auto before_study = bytes(root / uniform.id / "entry.txt");
     auto before_field = bytes(root / uniform.id / "state.lenia");
     CpuSolver study_solver(constant);

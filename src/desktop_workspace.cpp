@@ -21,6 +21,8 @@ StartupOptions startup_options() {
             options.smoke = true;
         else if (arg == L"--gallery-smoke") {
             options.gallery_smoke = options.smoke = true;
+        } else if (arg == L"--editor-smoke") {
+            options.editor_smoke = options.smoke = true;
         } else if (arg == L"--profile") {
             options.profile = true;
             options.smoke = true;
@@ -34,9 +36,10 @@ StartupOptions startup_options() {
             throw std::invalid_argument(
                 "Use --smoke, --profile, --cuda, --cpu-transfer, and/or --workspace <directory>");
     }
-    if (options.gallery_smoke && (options.workspace.empty() || options.profile))
+    if ((options.gallery_smoke || options.editor_smoke) &&
+        (options.workspace.empty() || options.profile || (options.gallery_smoke && options.editor_smoke)))
         throw std::invalid_argument(
-            "--gallery-smoke requires an isolated --workspace and cannot be combined with --profile");
+            "Gallery/editor smoke requires an isolated --workspace; smoke modes cannot be combined");
     return options;
 }
 WorkspaceAccess::WorkspaceAccess(const std::filesystem::path &override_directory) {

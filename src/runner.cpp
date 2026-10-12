@@ -52,8 +52,9 @@ struct Runner::Wake {
     }
 };
 Runner::Runner(bool prefer_gpu, SessionStates initial, bool initial_volume, std::function<void()> notify,
-               std::shared_ptr<GpuContext> display)
+               std::shared_ptr<GpuContext> display, std::array<SeedSettings, 2> seeds)
     : wake(std::make_unique<Wake>()), display_context(std::move(display)), notify_frame(std::move(notify)) {
+    seed_defaults = seeds;
     use_gpu = prefer_gpu;
     volume = initial_volume;
     worker = std::thread([this, initial = std::move(initial)]() mutable {
@@ -110,13 +111,14 @@ void Runner::step() {
         publish();
     });
 }
-void Runner::reset(Config c, uint64_t seed) {
-    enqueue([this, c, seed] {
-        auto next = create(random_state(c, seed));
+void Runner::reset(Config c, uint64_t seed, SeedSettings settings) {
+    enqueue([this, c, seed, settings] {
+        auto next = create(random_state(c, seed, settings));
         if (volume != (c.depth > 1))
             publish();
         volume = c.depth > 1;
         sessions[volume] = std::move(next);
+        ++initialization_revision[volume];
         ++generation;
         set_message("Reset from reproducible seed " + std::to_string(seed));
     });
@@ -135,7 +137,7 @@ void Runner::mode(bool v) {
             Config c;
             if (!v)
                 c = {1024, 1024, 1, 104};
-            sessions[v] = create(random_state(c, 1));
+            sessions[v] = create(random_state(c, 1, seed_defaults[v]));
         }
         publish(); // Preserve preceding parameter/step commands before leaving this session.
         volume = v;
@@ -183,6 +185,7 @@ void Runner::load(std::string path) {
         if (volume != v)
             publish();
         sessions[v] = std::move(next);
+        ++initialization_revision[v];
         volume = v;
         ++generation;
         running = false;
@@ -241,6 +244,7 @@ void Runner::publish(int index) {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     f->serial = ++serial;
     f->generation = generation;
+    f->initialization_revision = initialization_revision[index];
     f->running = running && index == int(volume);
     f->gpu = use_gpu;
     f->steps_per_second = running ? measured_rate : 0;
@@ -256,8 +260,8 @@ void Runner::loop(SessionStates initial) {
     using Clock = std::chrono::steady_clock;
     try {
         if (!initial[volume])
-            initial[volume] =
-                std::make_shared<State>(random_state(volume ? Config{} : Config{1024, 1024, 1, 104}, 1));
+            initial[volume] = std::make_shared<State>(
+                random_state(volume ? Config{} : Config{1024, 1024, 1, 104}, 1, seed_defaults[volume]));
         auto initialize = [&] {
             std::unique_ptr<Solver> next[2];
             for (int i = 0; i < 2; ++i)

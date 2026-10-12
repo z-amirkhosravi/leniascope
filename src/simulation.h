@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,12 +18,24 @@ struct Config {
     void validate() const;
     bool operator==(const Config &c) const;
 };
+struct SeedSettings {
+    int patches = 10;
+    double size_min = .6, size_max = 1.2; // Independent box side lengths, in kernel radii.
+    double value_min = 0, value_max = 1;
+    void validate() const;
+};
+// Expected geometric coverage for uniformly located, overlapping boxes; not a growth prediction.
+double seed_coverage(const Config &, const SeedSettings &);
+SeedSettings resize_seed_settings(const Config &from, const Config &to, SeedSettings);
 struct State {
     Config config;
     std::vector<double> values;
     uint64_t seed = 1, steps = 0;
     double time = 0;
     std::string backend = "CPU double / FFTW";
+    // Unknown for older/imported or externally constructed fields.
+    std::optional<SeedSettings> initialization;
+    int initialization_radius = 0;
 };
 struct Timings {
     double forward_ms = 0, multiply_ms = 0, inverse_ms = 0, update_ms = 0, total_ms = 0;
@@ -31,7 +44,7 @@ struct Measures {
     double mean = 0, minimum = 0, maximum = 0, rms_change = 0;
 };
 std::vector<double> make_kernel(const Config &);
-State random_state(Config, uint64_t seed);
+State random_state(Config, uint64_t seed, SeedSettings = {});
 double advance_value(double a, double neighborhood, const Config &);
 Measures measure(const std::vector<double> &, const std::vector<double> *previous = nullptr);
 // RMS mismatch after an integer translation on the periodic domain.

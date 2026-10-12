@@ -256,13 +256,15 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     Renderer renderer(gpu_context);
     Runner runner(
         preferences.gpu, std::move(restored.states), preferences.volume,
-        [window] { PostMessageW(window, WM_APP + 1, 0, 0); }, options.cpu_transfer ? nullptr : gpu_context);
+        [window] { PostMessageW(window, WM_APP + 1, 0, 0); }, options.cpu_transfer ? nullptr : gpu_context,
+        preferences.seeds);
     runner.speed(preferences.steps_per_second);
     auto &views = preferences.views;
     bool done = false, dirty_config = false;
     Config edit;
     uint64_t shown = 0, seed = 1, shown_generation = UINT64_MAX;
     int grid_power = 7;
+    uint64_t seen_initialization[2]{UINT64_MAX, UINT64_MAX};
     float rate = float(preferences.steps_per_second);
     std::string local_message = restored.message, previous_local_message;
     auto local_message_until = std::chrono::steady_clock::now();
@@ -424,6 +426,12 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         frame = runner.frame(); // Fetch the newest completed step after the presentation wait.
         bool is_volume = frame ? frame->state.config.depth > 1 : true;
         auto &view = views[is_volume];
+        auto &seed_settings = preferences.seeds[is_volume];
+        if (frame && seen_initialization[is_volume] != frame->initialization_revision) {
+            if (frame->state.initialization)
+                seed_settings = *frame->state.initialization;
+            seen_initialization[is_volume] = frame->initialization_revision;
+        }
         if (frame && frame->serial != shown) {
             if (history_volume != is_volume || frame->state.steps < history_step ||
                 shown_generation != frame->generation)
@@ -476,11 +484,11 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 runner.step();
             ImGui::SameLine();
             if (ImGui::Button("Reset"))
-                runner.reset(frame ? frame->state.config : edit, seed);
+                runner.reset(frame ? frame->state.config : edit, seed, seed_settings);
             ImGui::SameLine();
             if (ImGui::Button("New seed")) {
                 ++seed;
-                runner.reset(frame ? frame->state.config : edit, seed);
+                runner.reset(frame ? frame->state.config : edit, seed, seed_settings);
             }
             ImGui::SameLine();
             ImGui::SetNextItemWidth(180 * dpi);
@@ -546,18 +554,89 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 runner.parameters(edit);
                 dirty_config = false;
             }
-            if (ImGui::CollapsingHeader("Grid and initialization")) {
+            if (ImGui::CollapsingHeader("Grid and initialization", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::SliderInt("Power of two", &grid_power, 4, is_volume ? 8 : 11);
                 ImGui::Text("%d x %d%s", 1 << grid_power, 1 << grid_power, is_volume ? " x same" : "");
+                ImGui::Checkbox("Scale radius with grid", &preferences.scale_radius[is_volume]);
+                ImGui::Checkbox("Keep seed coverage on resize", &preferences.keep_seed_coverage[is_volume]);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Adjust patch count to preserve expected coverage, accounting for the new "
+                        "radius.\nThis creates a new random field; it does not resample the current state.");
                 ImGui::InputScalar("Seed", ImGuiDataType_U64, &seed);
+                ImGui::InputInt("Patches", &seed_settings.patches);
+                seed_settings.patches = std::clamp(seed_settings.patches, 0, 4096);
+                float size_min = float(seed_settings.size_min), size_max = float(seed_settings.size_max);
+                if (ImGui::DragFloatRange2("Side / radius", &size_min, &size_max, .01f, .05f, 4.f, "min %.2f",
+                                           "max %.2f", ImGuiSliderFlags_AlwaysClamp)) {
+                    seed_settings.size_min = size_min;
+                    seed_settings.size_max = size_max;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Each box side is independently random in this range times the kernel "
+                                      "radius.\nValues are rounded down to cells; patches wrap around the "
+                                      "periodic boundary.");
+                float value_min = float(seed_settings.value_min), value_max = float(seed_settings.value_max);
+                if (ImGui::DragFloatRange2("Values", &value_min, &value_max, .01f, 0, 1, "min %.2f",
+                                           "max %.2f", ImGuiSliderFlags_AlwaysClamp)) {
+                    seed_settings.value_min = value_min;
+                    seed_settings.value_max = value_max;
+                }
+                ImGui::TextWrapped("Seed controls affect Reset, New seed, and Create grid.");
+                if (ImGui::Button("Ten-patch defaults", {-1, 0}))
+                    seed_settings = SeedSettings{};
+                const auto &current = frame ? frame->state.config : edit;
+                double coverage = seed_coverage(current, seed_settings);
+                ImGui::Text("Expected coverage: %.2f%%", 100 * coverage);
+                ImGui::Text("Expected mean: %.4f",
+                            coverage * (seed_settings.value_min + seed_settings.value_max) / 2);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Statistical estimates including patch overlap; individual seeds vary.\nOverlapping "
+                        "patches overwrite values. This is not a prediction of survival.");
+                int minimum_side = std::min(current.width, current.height);
+                if (current.depth > 1)
+                    minimum_side = std::min(minimum_side, current.depth);
+                int maximum_side = seed_settings.size_min == seed_settings.size_max
+                                       ? int(current.radius * seed_settings.size_max)
+                                       : int(std::ceil(current.radius * seed_settings.size_max)) - 1;
+                ImGui::Text(
+                    "Patch sides: %d..%d cells",
+                    std::clamp(int(current.radius * seed_settings.size_min), 1, minimum_side),
+                    std::clamp(maximum_side, 1, std::max({current.width, current.height, current.depth})));
+                if (frame && frame->state.initialization &&
+                    frame->state.initialization_radius != current.radius)
+                    ImGui::TextWrapped(
+                        "This field was seeded at radius %d. Reset uses the current radius %d.",
+                        frame->state.initialization_radius, current.radius);
+                if (frame && !frame->state.initialization)
+                    ImGui::TextWrapped(
+                        "This field has no stored seed recipe. Reset uses the controls above.");
+                Config c = edit;
+                c.width = c.height = 1 << grid_power;
+                c.depth = is_volume ? c.width : 1;
+                if (preferences.scale_radius[is_volume])
+                    c.radius = std::max(1, int(std::round(double(edit.radius) * c.width / edit.width)));
+                c.radius = std::min(c.radius, c.width / 2);
+                SeedSettings next = seed_settings;
+                std::string resize_error;
+                try {
+                    if (preferences.keep_seed_coverage[is_volume] &&
+                        (c.width != current.width || c.height != current.height || c.depth != current.depth))
+                        next = resize_seed_settings(current, c, next);
+                    ImGui::Text("New grid: radius %d, %d patches", c.radius, next.patches);
+                    ImGui::Text("Expected coverage: %.2f%%", 100 * seed_coverage(c, next));
+                } catch (const std::exception &e) {
+                    resize_error = e.what();
+                    ImGui::TextWrapped("%s. Adjust the recipe or disable coverage preservation.",
+                                       resize_error.c_str());
+                }
+                ImGui::BeginDisabled(!resize_error.empty());
                 if (ImGui::Button("Create grid", {-1, 0})) {
-                    Config c = edit;
-                    c.width = c.height = 1 << grid_power;
-                    c.depth = is_volume ? c.width : 1;
-                    c.radius = std::min(c.radius, c.width / 2);
-                    runner.reset(c, seed);
+                    runner.reset(c, seed, next);
                     dirty_config = false;
                 }
+                ImGui::EndDisabled();
             }
             ImGui::Spacing();
             ImGui::Separator();

@@ -40,6 +40,12 @@ double uniform(uint64_t &s) {
 }
 void validate_values(const State &s) {
     s.config.validate();
+    if (s.initialization) {
+        s.initialization->validate();
+        Config initial = s.config;
+        initial.radius = s.initialization_radius;
+        initial.validate();
+    }
     if (s.values.size() != s.config.count() || !std::isfinite(s.time) || s.time < 0)
         throw std::runtime_error("Invalid state dimensions or time");
     for (double a : s.values)
@@ -98,22 +104,84 @@ std::vector<double> make_kernel(const Config &c) {
         v /= sum;
     return k;
 }
-State random_state(Config c, uint64_t seed) {
+void SeedSettings::validate() const {
+    if (patches < 0 || patches > 4096 || !std::isfinite(size_min) || !std::isfinite(size_max) ||
+        size_min < .05 || size_max < size_min || size_max > 4 || !std::isfinite(value_min) ||
+        !std::isfinite(value_max) || value_min < 0 || value_max > 1 || value_max < value_min)
+        throw std::invalid_argument("Seed settings: 0..4096 patches, sides 0.05..4 radii, values in [0,1]");
+}
+namespace {
+double mean_side(int dimension, int radius, const SeedSettings &s) {
+    double low = radius * s.size_min, high = radius * s.size_max;
+    if (low == high)
+        return std::clamp(int(low), 1, dimension);
+    // E[L] = sum P(L >= k), including rounding to cells and clipping to each dimension.
+    double mean = 1;
+    for (int k = 2; k <= dimension; ++k)
+        mean += std::clamp((high - k) / (high - low), 0., 1.);
+    return mean;
+}
+double patch_fraction(const Config &c, const SeedSettings &s) {
     c.validate();
+    s.validate();
+    double cells = mean_side(c.width, c.radius, s) * mean_side(c.height, c.radius, s);
+    if (c.depth > 1)
+        cells *= mean_side(c.depth, c.radius, s);
+    return cells / c.count();
+}
+} // namespace
+double seed_coverage(const Config &c, const SeedSettings &s) {
+    double fraction = patch_fraction(c, s);
+    if (!s.patches)
+        return 0;
+    return fraction == 1 ? 1 : -std::expm1(s.patches * std::log1p(-fraction));
+}
+SeedSettings resize_seed_settings(const Config &from, const Config &to, SeedSettings s) {
+    double old_fraction = patch_fraction(from, s), new_fraction = patch_fraction(to, s);
+    if (!s.patches || old_fraction == new_fraction)
+        return s;
+    if (new_fraction == 1)
+        s.patches = 1;
+    else {
+        if (old_fraction == 1)
+            throw std::invalid_argument(
+                "Exact full coverage cannot be preserved with smaller random patches");
+        double count = s.patches * std::log1p(-old_fraction) / std::log1p(-new_fraction);
+        if (count > 4096.49)
+            throw std::invalid_argument("Preserving coverage would require more than 4096 patches");
+        s.patches = std::max(1, int(std::round(count)));
+    }
+    return s;
+}
+State random_state(Config c, uint64_t seed, SeedSettings settings) {
+    c.validate();
+    settings.validate();
+    auto maximum_side = [&](int n) { return std::clamp(int(c.radius * settings.size_max), 1, n); };
+    uint64_t maximum_work = uint64_t(settings.patches) * maximum_side(c.width) * maximum_side(c.height);
+    if (c.depth > 1)
+        maximum_work *= maximum_side(c.depth);
+    if (maximum_work > 16 * c.count())
+        throw std::invalid_argument("Too many overlapping seed writes; reduce patch count or patch size");
     State s{c, std::vector<double>(c.count()), seed};
+    s.initialization = settings;
+    s.initialization_radius = c.radius;
     uint64_t rng = seed;
-    // Patch sizes scale with the kernel; coordinates wrap safely on the torus.
-    for (int patch = 0; patch < 10; ++patch) {
+    // Keep the default random stream compatible with the previous ten-patch initializer.
+    for (int patch = 0; patch < settings.patches; ++patch) {
         int bx = int(uniform(rng) * c.width), by = int(uniform(rng) * c.height),
             bz = int(uniform(rng) * c.depth);
-        int w = std::max(1, int(c.radius * (.6 + .6 * uniform(rng)))),
-            h = std::max(1, int(c.radius * (.6 + .6 * uniform(rng)))),
-            d = c.depth > 1 ? std::max(1, int(c.radius * (.6 + .6 * uniform(rng)))) : 1;
+        auto side = [&](int n) {
+            return std::clamp(
+                int(c.radius * (settings.size_min + (settings.size_max - settings.size_min) * uniform(rng))),
+                1, n);
+        };
+        int w = side(c.width), h = side(c.height), d = c.depth > 1 ? side(c.depth) : 1;
         for (int z = 0; z < d; ++z)
             for (int y = 0; y < h; ++y)
                 for (int x = 0; x < w; ++x)
                     s.values[(size_t((bz + z) % c.depth) * c.height + (by + y) % c.height) * c.width +
-                             (bx + x) % c.width] = uniform(rng);
+                             (bx + x) % c.width] =
+                        settings.value_min + (settings.value_max - settings.value_min) * uniform(rng);
     }
     return s;
 }
@@ -328,7 +396,7 @@ void CpuSolver::parameters(const Config &c) {
     }
 }
 
-// Version 2 is explicitly little endian IEEE-754 doubles (Windows/x86-64).
+// Versions 2/3 use little endian IEEE-754 doubles. Version 3 records the optional seed recipe.
 // Version 1 import supports the original 2D Leniav1 format.
 void save_state(const State &s, const std::string &filename) {
     validate_values(s);
@@ -347,7 +415,7 @@ void save_state(const State &s, const std::string &filename) {
     std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
     if (!f)
         throw std::runtime_error("Cannot open checkpoint for writing");
-    f.write("LeniaS2\0", 8);
+    f.write("LeniaS3\0", 8);
     const auto &c = s.config;
     for (int v : {c.width, c.height, c.depth, c.radius})
         write(f, int32_t(v));
@@ -363,6 +431,14 @@ void save_state(const State &s, const std::string &filename) {
     write(f, len);
     f.write(s.backend.data(), len);
     write(f, uint64_t(s.values.size()));
+    write(f, uint32_t(bool(s.initialization)));
+    if (s.initialization) {
+        const auto &r = *s.initialization;
+        write(f, int32_t(r.patches));
+        write(f, int32_t(s.initialization_radius));
+        for (double v : {r.size_min, r.size_max, r.value_min, r.value_max})
+            write(f, v);
+    }
     f.write(reinterpret_cast<const char *>(s.values.data()), s.values.size() * sizeof(double));
     if (!f)
         throw std::runtime_error("Checkpoint write failed");
@@ -392,7 +468,8 @@ State load_state(const std::string &filename) {
         read(f, s.config.dt);
         s.seed = 0;
         s.backend = "Legacy v1 import";
-    } else if (std::memcmp(signature.data(), "LeniaS2\0", 8) == 0) {
+    } else if (std::memcmp(signature.data(), "LeniaS2\0", 8) == 0 ||
+               std::memcmp(signature.data(), "LeniaS3\0", 8) == 0) {
         int32_t dims[4];
         for (auto &v : dims)
             read(f, v);
@@ -422,6 +499,27 @@ State load_state(const std::string &filename) {
         s.config.validate();
         if (n != s.config.count())
             throw std::runtime_error("Checkpoint cell count mismatch");
+        if (signature[6] == '3') {
+            uint32_t present;
+            read(f, present);
+            if (present > 1)
+                throw std::runtime_error("Invalid seed recipe flag");
+            if (present) {
+                SeedSettings r;
+                int32_t patches;
+                read(f, patches);
+                r.patches = patches;
+                int32_t radius;
+                read(f, radius);
+                s.initialization_radius = radius;
+                read(f, r.size_min);
+                read(f, r.size_max);
+                read(f, r.value_min);
+                read(f, r.value_max);
+                r.validate();
+                s.initialization = r;
+            }
+        }
     } else
         throw std::runtime_error("Unknown checkpoint format");
     s.config.validate();

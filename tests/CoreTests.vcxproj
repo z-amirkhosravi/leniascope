@@ -35,6 +35,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="core_tests.cpp" />
+    <ClCompile Include="seed_tests.cpp" />
     <ClCompile Include="workspace_tests.cpp" />
     <ClCompile Include="numerical_tests.cpp" />
     <ClCompile Include="..\src\numerics.cpp" />

@@ -62,9 +62,11 @@ void compare_convolution(Config c) {
     std::cout << "PASS convolution " << c.width << 'x' << c.height << 'x' << c.depth << " error=" << error
               << '\n';
 }
+void seed_tests();
 int main(int argc, char **argv) {
     try {
         bool cpu_only = argc > 1 && std::string(argv[1]) == "--cpu-only";
+        seed_tests();
         workspace_tests();
         numerical_tests(cpu_only);
         compare_convolution({8, 8, 1, 2});
@@ -88,7 +90,8 @@ int main(int argc, char **argv) {
         auto loaded = load_state("test-roundtrip.lenia");
         std::remove("test-roundtrip.lenia");
         require(after.values == loaded.values && after.config == loaded.config &&
-                    after.steps == loaded.steps && after.time == loaded.time && loaded.seed == 999,
+                    after.steps == loaded.steps && after.time == loaded.time && loaded.seed == 999 &&
+                    loaded.initialization && loaded.initialization->patches == 10,
                 "Checkpoint round trip");
         std::ofstream bad("test-invalid.lenia", std::ios::binary);
         bad.write("LeniaS2", 7);
@@ -260,7 +263,8 @@ int main(int argc, char **argv) {
             Runner runner(false);
             runner.load("missing-reliability-test-checkpoint.lenia");
             Config cfg{16, 16, 1, 3};
-            runner.reset(cfg, 987);
+            SeedSettings recipe{23, .8, 1.5, .2, .7};
+            runner.reset(cfg, 987, recipe);
             runner.speed(1);
             runner.step();
             cfg.mu = .21;
@@ -272,7 +276,9 @@ int main(int argc, char **argv) {
             auto states = future.get();
             require(states.volume && states.states[0] && states.states[1] && states.states[0]->seed == 987 &&
                         states.states[0]->steps == 1 && states.states[0]->config.mu == .21 &&
-                        states.states[1]->steps == 0,
+                        states.states[1]->steps == 0 && states.states[0]->initialization &&
+                        states.states[0]->initialization->patches == 23 &&
+                        states.states[0]->initialization_radius == 3,
                     "Command order or inactive session snapshot was lost");
             Runner resumed(false, states.states, false);
             auto restored = resumed.pause_and_snapshot().get();

@@ -15,8 +15,10 @@ int main(int argc, char **argv) {
     try {
         if (argc < 2 || std::string(argv[1]) == "--help") {
             std::cout
-                << "Leniascope laboratory CLI / model schema 2\n"
+                << "Leniascope laboratory CLI / checkpoint schema 3\n"
                    "run [--dimensions 2|3] [--size 128] [--radius 26] [--seed 1]\n"
+                   "    [--patches 10] [--patch-min 0.6] [--patch-max 1.2]  (sides / radius)\n"
+                   "    [--value-min 0] [--value-max 1]\n"
                    "    [--steps 100] [--dt 0.1] [--mu 0.15] [--sigma 0.017]\n"
                    "    [--backend cpu|gpu] [--rule classic|smooth] [--sharpness 12]\n"
                    "    [--input checkpoint.lenia] [--output checkpoint.lenia]\n"
@@ -67,11 +69,12 @@ int main(int argc, char **argv) {
             throw std::invalid_argument("Unknown command; use --help");
         std::map<std::string, std::string> options;
         const std::vector<std::string> known = {
-            "--dimensions", "--size", "--radius",       "--seed",
-            "--steps",      "--dt",   "--mu",           "--sigma",
-            "--backend",    "--rule", "--sharpness",    "--input",
-            "--output",     "--csv",  "--sample-every", "--checkpoint-every",
-            "--sweep-mu"};
+            "--dimensions", "--size",     "--radius",       "--seed",
+            "--steps",      "--dt",       "--mu",           "--sigma",
+            "--backend",    "--rule",     "--sharpness",    "--input",
+            "--output",     "--csv",      "--sample-every", "--checkpoint-every",
+            "--sweep-mu",   "--patches",  "--patch-min",    "--patch-max",
+            "--value-min",  "--value-max"};
         for (int i = 2; i < argc; i += 2) {
             if (i + 1 >= argc || std::find(known.begin(), known.end(), argv[i]) == known.end())
                 throw std::invalid_argument("Unknown or incomplete option: " + std::string(argv[i]));
@@ -102,6 +105,19 @@ int main(int argc, char **argv) {
         bool from_file = options.count("--input") != 0;
         if (from_file)
             initial = load_state(options.at("--input"));
+        SeedSettings seed_settings;
+        if (from_file) {
+            for (const char *key :
+                 {"--seed", "--patches", "--patch-min", "--patch-max", "--value-min", "--value-max"})
+                if (options.count(key))
+                    throw std::invalid_argument("Initialization options cannot be used with --input");
+        }
+        seed_settings.patches = integer("--patches", "10");
+        seed_settings.size_min = number("--patch-min", "0.6");
+        seed_settings.size_max = number("--patch-max", "1.2");
+        seed_settings.value_min = number("--value-min", "0");
+        seed_settings.value_max = number("--value-max", "1");
+        seed_settings.validate();
         Config c = from_file ? initial.config : Config{};
         int dimensions = integer("--dimensions", c.depth > 1 ? "3" : "2");
         if (dimensions != 2 && dimensions != 3)
@@ -165,7 +181,7 @@ int main(int argc, char **argv) {
                     throw std::invalid_argument("Cannot resize a loaded checkpoint");
                 s.config = c;
             } else
-                s = random_state(c, seed);
+                s = random_state(c, seed, seed_settings);
             std::unique_ptr<Solver> solver;
             if (backend == "gpu")
                 solver = std::make_unique<GpuSolver>(s);
@@ -188,19 +204,28 @@ int main(int argc, char **argv) {
                     throw std::runtime_error("Cannot open CSV");
                 csv << std::setprecision(17)
                     << "schema,backend,width,height,depth,radius,mu,sigma,dt,rule,sharpness,seed,step,time,"
-                       "mean,min,max,rms_change,compute_ms,forward_ms,multiply_ms,inverse_ms,update_ms\n";
+                       "mean,min,max,rms_change,compute_ms,forward_ms,multiply_ms,inverse_ms,update_ms,seed_"
+                       "radius,seed_"
+                       "patches,seed_size_min,seed_size_max,seed_value_min,seed_value_max\n";
             }
             auto record = [&](const State &state, const std::vector<double> *previous) {
                 if (!csv.is_open())
                     return;
                 auto m = measure(state.values, previous);
                 auto t = solver->timings();
-                csv << 2 << ',' << backend << ',' << c.width << ',' << c.height << ',' << c.depth << ','
+                csv << 3 << ',' << backend << ',' << c.width << ',' << c.height << ',' << c.depth << ','
                     << c.radius << ',' << c.mu << ',' << c.sigma << ',' << c.dt << ',' << uint32_t(c.rule)
                     << ',' << c.smoothness << ',' << state.seed << ',' << state.steps << ',' << state.time
                     << ',' << m.mean << ',' << m.minimum << ',' << m.maximum << ',' << m.rms_change << ','
                     << t.total_ms << ',' << t.forward_ms << ',' << t.multiply_ms << ',' << t.inverse_ms << ','
-                    << t.update_ms << '\n';
+                    << t.update_ms;
+                if (state.initialization) {
+                    const auto &r = *state.initialization;
+                    csv << ',' << state.initialization_radius << ',' << r.patches << ',' << r.size_min << ','
+                        << r.size_max << ',' << r.value_min << ',' << r.value_max;
+                } else
+                    csv << ",,,,,,";
+                csv << '\n';
                 if (!csv)
                     throw std::runtime_error("CSV write failed");
             };

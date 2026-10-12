@@ -44,6 +44,9 @@ void workspace_tests() {
     p.views[1].yaw = -3.4f;
     p.views[1].offset[2] = .3f;
     p.maximized = true;
+    p.seeds[0] = {23, .8, 1.5, .2, .7};
+    p.keep_seed_coverage[0] = false;
+    p.scale_radius[1] = true;
     auto encoded = encode_preferences(p);
     check(encode_preferences(decode_preferences(encoded)) == encoded, "Workspace settings round trip");
     for (const auto &bad :
@@ -56,6 +59,16 @@ void workspace_tests() {
         }
         check(rejected, "Malformed workspace settings accepted");
     }
+    // Version 1 preferences remain readable; initialization controls receive defaults.
+    auto legacy = encoded;
+    size_t end = 0;
+    for (int i = 0; i < 4; ++i)
+        end = legacy.find('\n', end) + 1;
+    legacy.resize(end);
+    legacy.replace(legacy.find("Workspace 2"), 11, "Workspace 1");
+    auto old = decode_preferences(legacy);
+    check(old.seeds[0].patches == 10 && old.keep_seed_coverage[0] && !old.scale_radius[1],
+          "Legacy preference migration");
     auto invalid = p;
     invalid.views[1].yaw = std::numeric_limits<float>::quiet_NaN();
     bool rejected = false;

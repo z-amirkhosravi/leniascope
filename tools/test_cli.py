@@ -26,7 +26,23 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
     run('run', '--dimensions', 3, '--size', 16, '--radius', 3, '--steps', 0,
         '--output', arg_path(state))
     data = state.read_bytes()
+    assert data[:8] == b'LeniaS3\0'
+    recipe_offset = 96 + struct.unpack_from('<I', data, 84)[0]
+    assert struct.unpack_from('<Iii4d', data, recipe_offset) == (1, 10, 3, .6, 1.2, 0., 1.)
+    # Remove just the new metadata to make a genuine version-2 checkpoint.
+    legacy = root / 'version2.lenia'
+    legacy.write_bytes(b'LeniaS2\0' + data[8:recipe_offset] + data[recipe_offset+44:])
+    comparison = run('compare', arg_path(legacy), arg_path(state))
+    assert float(comparison.splitlines()[1].split(',')[-1]) < 1e-14
+    upgraded = root / 'upgraded.lenia'
+    run('run', '--input', arg_path(legacy), '--steps', 0, '--output', arg_path(upgraded))
+    upgraded_data = upgraded.read_bytes()
+    assert struct.unpack_from('<I', upgraded_data, 96 + struct.unpack_from('<I', upgraded_data, 84)[0])[0] == 0
     cases = [b'wrong!!!' + data[8:], data[:-1], data + b'garbage']
+    for offset, fmt, value in [(recipe_offset, '<I', 2), (recipe_offset+4, '<i', 4097), (recipe_offset+12, '<d', float('nan')), (recipe_offset+8, '<i', 0)]:
+        damaged = bytearray(data)
+        struct.pack_into(fmt, damaged, offset, value)
+        cases.append(damaged)
     for offset, fmt, value in [(8, '<i', -1), (32, '<d', float('nan')), (84, '<I', 999999)]:
         damaged = bytearray(data)
         struct.pack_into(fmt, damaged, offset, value)
@@ -63,4 +79,26 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
     assert state.read_bytes() == data  # The study never changes the source experiment.
     for args in [('--levels', 1), ('--steps', 0), ('--steps', '3x'), ('--unknown', 3)]:
         run('converge', arg_path(state), *args, succeeds=False)
-    print('PASS CLI malformed checkpoints, resume equivalence, recurrence, sweep CSV, timestep study, invalid options')
+    custom = root / 'custom.lenia'
+    custom_csv = root / 'custom.csv'
+    recipe_args = ('--patches', 23, '--patch-min', .8, '--patch-max', 1.5, '--value-min', .2, '--value-max', .7)
+    run('run', '--size', 16, '--radius', 3, '--seed', 77, '--steps', 0, *recipe_args,
+        '--output', arg_path(custom), '--csv', arg_path(custom_csv))
+    custom_data = custom.read_bytes()
+    offset = 96 + struct.unpack_from('<I', custom_data, 84)[0]
+    assert struct.unpack_from('<Iii4d', custom_data, offset) == (1, 23, 3, .8, 1.5, .2, .7)
+    row = next(csv.DictReader(custom_csv.open()))
+    assert row['schema'] == '3' and int(row['seed_patches']) == 23 and float(row['seed_value_min']) == .2
+    for args in [('--patches', -1), ('--patch-min', 2), ('--value-max', 2), ('--patches', 5000)]:
+        run('run', '--size', 16, '--radius', 3, '--steps', 0, *args, succeeds=False)
+    run('run', '--input', arg_path(custom), '--steps', 0, '--patches', 10, succeeds=False)
+    assert int(row['seed_radius']) == 3
+    resumed_custom = root / 'resumed-custom.lenia'
+    run('run', '--input', arg_path(custom), '--steps', 0, '--output', arg_path(resumed_custom))
+    assert resumed_custom.read_bytes() == custom_data
+    changed_radius = root / 'changed-radius.lenia'
+    run('run', '--input', arg_path(custom), '--radius', 4, '--steps', 0, '--output', arg_path(changed_radius))
+    changed = changed_radius.read_bytes()
+    assert struct.unpack_from('<i', changed, 20)[0] == 4
+    assert struct.unpack_from('<i', changed, offset+8)[0] == 3 # Preserve the actual seeding radius.
+    print('PASS seed recipes, v2 migration, CSV metadata; CLI malformed checkpoints, resume equivalence, recurrence, sweep CSV, timestep study, invalid options')

@@ -82,6 +82,9 @@ void GalleryPanel::select(std::string id) {
     selected.reset();
     image.Reset();
     studies = {};
+    batches.clear();
+    batch_index = batch_run = 0;
+    batch_label[0] = 0;
     study_index = 0;
     study_settings_open = true;
     message.clear();
@@ -90,6 +93,11 @@ void GalleryPanel::select(std::string id) {
         Result r;
         r.entry = read_gallery_entry(path, id);
         r.studies_source = id;
+        try {
+            r.batches = read_batches(path / id / "batches", r.catalog.errors);
+        } catch (const std::exception &e) {
+            r.catalog.errors.push_back(std::string("Cannot browse batches: ") + e.what());
+        }
         try {
             r.studies = list_gallery_studies(path, id);
         } catch (const std::exception &e) {
@@ -392,6 +400,39 @@ void GalleryPanel::tick(Runner &runner, std::array<ViewSettings, 2> &views) {
                 if (selected->state.backend.find("cuFFT") != std::string::npos)
                     study_backend = 2;
 #endif
+                batch_plan.first_seed = selected->state.seed;
+                batch_plan.reseed = false;
+                batch_plan.repetitions = 1;
+                batch_plan.axis = BatchAxis::Mu;
+                std::snprintf(batch_value_text, sizeof batch_value_text, "%.6g, %.6g, %.6g",
+                              selected->state.config.mu - .01, selected->state.config.mu,
+                              selected->state.config.mu + .01);
+                if (completed == Job::Save)
+                    batches.clear();
+                batch_settings_open = true;
+            }
+            if (result.batches && selected && selected->id == result.studies_source) {
+                batches = std::move(*result.batches);
+                batch_settings_open = batches.empty();
+                batch_index = batch_run = 0;
+                std::snprintf(batch_label, sizeof batch_label, "%s",
+                              batches.empty() || batches.front().result.runs.empty()
+                                  ? ""
+                                  : batches.front().result.runs.front().label.c_str());
+            }
+            if (result.batch) {
+                batch_settings_open = false;
+                if (completed == Job::BatchLabel)
+                    batches.at(batch_index) = std::move(*result.batch);
+                else {
+                    batches.insert(batches.begin(), std::move(*result.batch));
+                    batch_index = batch_run = 0;
+                    batch_label[0] = 0;
+                }
+                const auto &b = batches.at(batch_index).result;
+                message = "Batch " + b.status + ": " + std::to_string(b.runs.size()) + " saved runs.";
+                if (!b.error.empty())
+                    message += " " + b.error;
             }
             if (result.studies && selected && selected->id == result.studies_source) {
                 studies = std::move(*result.studies);
@@ -629,8 +670,14 @@ void GalleryPanel::draw(Runner &runner, const std::array<ViewSettings, 2> &views
                     ImGui::EndTabItem();
                 }
                 if (ImGui::BeginTabItem("Behavior study", nullptr,
-                                        smoke_phase >= 6 ? ImGuiTabItemFlags_SetSelected : 0)) {
+                                        smoke_phase >= 6 && smoke_phase < 9 ? ImGuiTabItemFlags_SetSelected
+                                                                            : 0)) {
                     draw_study(dpi, closing);
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Batches", nullptr,
+                                        smoke_phase >= 9 ? ImGuiTabItemFlags_SetSelected : 0)) {
+                    draw_batch(dpi, closing);
                     ImGui::EndTabItem();
                 }
                 ImGui::EndTabBar();
@@ -645,7 +692,9 @@ bool GalleryPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &view
         throw std::runtime_error("Gallery smoke requires a writable isolated workspace");
     if (busy())
         return false;
-    if ((smoke_phase == 5 || smoke_phase == 8) && !ready(smoke_check))
+    if ((smoke_phase == 5 || smoke_phase == 8 || smoke_phase == 12 || smoke_phase == 14 ||
+         smoke_phase == 16) &&
+        !ready(smoke_check))
         return false;
     std::ofstream("gallery-smoke.log", std::ios::app)
         << GetTickCount64() << " gallery phase " << smoke_phase << '\n';
@@ -705,6 +754,58 @@ bool GalleryPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &view
     case 8:
         if (signature(smoke_check.get()) != smoke_signature)
             throw std::runtime_error("Study changed the live field");
+        batch_plan.axis = BatchAxis::Spread;
+        batch_plan.reseed = true;
+        batch_plan.repetitions = 1;
+        batch_plan.first_seed = 216;
+        batch_plan.observation = {5, 2, .01};
+        std::snprintf(batch_value_text, sizeof batch_value_text, "0.8, 1.5");
+        begin_batch();
+        ++smoke_phase;
+        break;
+    case 9:
+        if (batches.size() != 1 || batches[0].result.status != "complete" ||
+            batches[0].result.runs.size() != 2)
+            throw std::runtime_error("Gallery batch failed: " + message);
+        std::snprintf(batch_label, sizeof batch_label, "smoke assessment");
+        batch_annotation();
+        ++smoke_phase;
+        break;
+    case 10:
+        scan();
+        ++smoke_phase;
+        break;
+    case 11:
+        if (batches.size() != 1 || batches[0].result.runs[0].label != "smoke assessment")
+            throw std::runtime_error("Gallery batch did not reload");
+        smoke_check = runner.capture_current();
+        ++smoke_phase;
+        break;
+    case 12:
+        if (signature(smoke_check.get()) != smoke_signature)
+            throw std::runtime_error("Batch changed the live field");
+        batch_field(true);
+        ++smoke_phase;
+        break;
+    case 13:
+        smoke_check = runner.capture_current();
+        ++smoke_phase;
+        break;
+    case 14:
+        if (signature(smoke_check.get()) !=
+            signature(load_batch_field(root / selected->id / "batches" / batches[0].id, 0, true)))
+            throw std::runtime_error("Gallery batch endpoint did not load exactly");
+        load(runner);
+        ++smoke_phase;
+        break;
+    case 15:
+        smoke_check = runner.capture_current();
+        ++smoke_phase;
+        break;
+    case 16:
+        if (signature(smoke_check.get()) != smoke_signature)
+            throw std::runtime_error("Could not return to gallery source after batch inspection");
+        opened = true;
         ++smoke_phase;
         return true;
     default:

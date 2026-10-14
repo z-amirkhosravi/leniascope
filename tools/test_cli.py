@@ -153,4 +153,40 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
         run('study', arg_path(custom), '--output', arg_path(destination), *args, succeeds=False)
         assert not destination.exists()
     print('PASS behavior CLI sampling, backend provenance, source preservation and output validation')
+    for backend in ['cpu'] + (['gpu', 'cuda'] if '--cuda' in sys.argv[2:] else []):
+        destination = root / f'batch-{backend}'
+        stdout = run('batch', arg_path(custom), '--parameter', 'mu', '--values', '.14,.16',
+                     '--steps', 5, '--sample-every', 2, '--backend', backend, '--output', arg_path(destination))
+        rows = list(csv.DictReader(io.StringIO(stdout)))
+        assert len(rows) == 2 and [float(r['value']) for r in rows] == [.14, .16]
+        assert all(r['status'] == 'complete' and r['steps'] == '5' for r in rows)
+        assert stdout == (destination / 'summary.csv').read_text()
+        assert (destination / 'source.lenia').read_bytes() == custom_data
+        for i, mu in enumerate((.14, .16)):
+            control = root / f'batch-control-{backend}-{i}.lenia'
+            run('run', '--input', arg_path(custom), '--mu', mu, '--steps', 5, '--backend', backend,
+                '--output', arg_path(control))
+            assert control.read_bytes() == (destination / f'run-{i+1:04d}' / 'final.lenia').read_bytes()
+        run('batch', arg_path(custom), '--parameter', 'mu', '--values', '.14,.16',
+            '--output', arg_path(destination), succeeds=False)
+        assert stdout == (destination / 'summary.csv').read_text()
+    pair = root / 'pair-2.lenia'
+    destination = root / 'batch-pairs'
+    rows = list(csv.DictReader(io.StringIO(run('batch', arg_path(pair), '--parameter', 'spread',
+                '--values', '.8,1.5', '--seeds', 2, '--first-seed', 216, '--steps', 3,
+                '--sample-every', 2, '--output', arg_path(destination)))))
+    assert [int(r['seed']) for r in rows] == [216, 217, 216, 217]
+    assert [float(r['value']) for r in rows] == [.8, .8, 1.5, 1.5]
+    for extra in [('--values','1,,2'), ('--values','nan'), ('--values','1,1'), ('--parameter','spread'),
+                  ('--backend','unknown'), ('--first-seed','-1'), ('--steps','5x'), ('--unknown','1'),
+                  ('--seeds','0'), ('--seeds','257')]:
+        destination = root / 'bad-batch'
+        # Remove the replaced default flag so this tests the value, not a duplicate option.
+        defaults = {'--parameter': 'mu', '--values': '.14,.16', '--steps': '5', '--sample-every': '2'}
+        defaults.update(dict(zip(extra[::2], extra[1::2])))
+        flags = [s for item in defaults.items() for s in item]
+        run('batch', arg_path(custom), '--output', arg_path(destination), *flags, succeeds=False)
+        assert not destination.exists()
+    assert custom.read_bytes() == custom_data
+    print('PASS batch CLI exact replay, paired seeds, CSV, source preservation and invalid plans')
     print('PASS seed layouts/recipes, v2/v3 migration, CSV metadata; CLI malformed checkpoints, resume equivalence, recurrence, sweep CSV, timestep study, invalid options')

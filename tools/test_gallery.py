@@ -70,6 +70,19 @@ def exercise(root):
             rows = list(csv.DictReader((studies[0] / 'samples.csv').open()))
             assert [int(row['step']) for row in rows] == [0, 3, 6, 7]
             assert float(rows[0]['raw_rms']) == 0 and float(rows[0]['aligned_rms']) == 0
+            batches = list((entry / 'batches').iterdir())
+            assert len(batches) == 1
+            batch = batches[0]
+            assert (batch / 'complete.txt').exists()
+            assert (batch / 'source.lenia').read_bytes() == original[active]
+            batch_rows = list(csv.DictReader((batch / 'summary.csv').open()))
+            assert len(batch_rows) == 2 and [float(r['value']) for r in batch_rows] == [.8, 1.5]
+            assert batch_rows[0]['label'] == 'smoke assessment'
+            for i, row in enumerate(batch_rows):
+                assert row['status'] == 'complete' and row['steps'] == '5' and row['seed'] == '216'
+                run = batch / f'run-{i+1:04d}'
+                for kind in ['initial', 'final']:
+                    assert checksum((run / f'{kind}.lenia').read_bytes()) == int(row[f'{kind}_hash'])
             manifest = (profile / 'recovery-b/complete.txt').read_text().split()
             assert manifest[:6] == ['LeniascopeRecovery', '2', '2', '1', '1', str(active)]
             assert manifest[8:10] == [str(int(active==0)), str(int(active==1))]
@@ -83,7 +96,7 @@ def exercise(root):
                 assert len(a.split()) == len(b.split())
                 assert all(abs(float(x)-float(y)) < 1e-6 for x,y in zip(a.split(), b.split()))
             assert (case / 'ui-smoke.bmp').stat().st_size > 10000
-            print(f'PASS {backend} {active+2}D gallery GUI: exact capture/reload, saved behavior study, unchanged live/inactive fields, preview and view', flush=True)
+            print(f'PASS {backend} {active+2}D gallery GUI: capture/reload, behavior study, batch/label/reopen/endpoint load, unchanged live/inactive fields', flush=True)
 
 if args.output_dir:
     args.output_dir.resolve().mkdir(parents=True, exist_ok=False)

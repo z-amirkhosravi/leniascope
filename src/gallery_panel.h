@@ -1,4 +1,5 @@
 #pragma once
+#include "batch.h"
 #include "gallery.h"
 #include "renderer.h"
 #include "runner.h"
@@ -31,6 +32,10 @@ class GalleryPanel {
     bool smoke(Runner &, const std::array<ViewSettings, 2> &);
 
   private:
+    struct SavedBatch {
+        std::string id;
+        BatchResult result;
+    };
     struct Result {
         GalleryCatalog catalog;
         std::optional<GalleryEntry> entry;
@@ -38,6 +43,8 @@ class GalleryPanel {
         std::optional<State> state;
         std::optional<BehaviorReport> report;
         std::optional<GalleryStudies> studies;
+        std::optional<std::vector<SavedBatch>> batches;
+        std::optional<SavedBatch> batch;
         std::string studies_source;
     };
     enum class Job {
@@ -48,7 +55,9 @@ class GalleryPanel {
         Edit,
         Load,
         Study,
-        SaveStudy
+        SaveStudy,
+        Batch,
+        BatchLabel
     } job = Job::None;
     std::filesystem::path root;
     bool writable, opened = false, editing = false;
@@ -80,6 +89,17 @@ class GalleryPanel {
     std::optional<BehaviorReport> pending_study;
     std::atomic<bool> study_stop{false};
     std::atomic<int> study_progress{0};
+    BatchPlan batch_plan;
+    bool batch_settings_open = true;
+    std::vector<SavedBatch> batches;
+    int batch_index = 0, batch_run = 0;
+    char batch_value_text[2048] = "0.14, 0.15, 0.16", batch_label[257]{};
+    std::atomic<int> batch_progress{0};
+    void begin_batch();
+    void draw_batch(float dpi, bool closing);
+    void batch_field(bool final);
+    void batch_annotation();
+    static std::vector<SavedBatch> read_batches(const std::filesystem::path &, std::vector<std::string> &);
     void begin_study();
     void save_study();
     void draw_study(float dpi, bool closing);

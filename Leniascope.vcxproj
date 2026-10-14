@@ -48,7 +48,9 @@
     <ClCompile Include="src\application.cpp" />
     <ClCompile Include="src\gallery.cpp" />
     <ClCompile Include="src\behavior.cpp" />
+    <ClCompile Include="src\batch.cpp" />
     <ClCompile Include="src\gallery_panel.cpp" />
+    <ClCompile Include="src\gallery_batch.cpp" />
     <ClCompile Include="src\editor_panel.cpp" />
     <ClCompile Include="src\field_edit.cpp" />
     <ClCompile Include="src\desktop_workspace.cpp" />

@@ -148,7 +148,7 @@ Use a native Windows directory for large experimental workspaces when possible. 
 
 Saving writes a private staging directory and commits it with one rename. Interrupted staging directories are ignored; malformed entries are reported without hiding valid ones. Checksums detect accidental checkpoint/preview corruption, and reload cross-checks the stored provenance and scalar measurements. These are integrity checks, not cryptographic authentication or guarantees against hardware failure. A damaged preview does not prevent loading an intact field. Only the workspace-owning window can write gallery entries. Catalog and file work runs in the background; capture/readback and preview creation can briefly delay a large-grid operation. Closing waits for accepted gallery work before taking the final workspace snapshot and reports write failures.
 
-The portable `src/gallery.*` store is separate from the ImGui interface in `src/gallery_panel.*`. Live numerical stepping remains in the simulation worker. `python tools/test_gallery.py <GUI> <CLI> --cuda` exercises the real GUI capture/save/browse/reload and behavior-study flow for CPU, DirectCompute and CUDA in both dimensions, checking full checkpoint bytes, camera settings, the inactive session and persisted reports. Omit `--cuda` for a standard build. The application's `--gallery-smoke` test mode requires an explicit isolated `--workspace`.
+The portable `src/gallery.*` store is separate from the ImGui interface in `src/gallery_panel.*`; `src/batch.*` provides the batch engine and store, with controls in `src/gallery_batch.cpp`. Live numerical stepping remains in the simulation worker. `python tools/test_gallery.py <GUI> <CLI> --cuda` exercises the real GUI capture/save/browse/reload, behavior studies, batches, outcome labels and endpoint loading for CPU, DirectCompute and CUDA in both dimensions, checking full checkpoint bytes, camera settings, the inactive session and persisted reports. Omit `--cuda` for a standard build. The application's `--gallery-smoke` test mode requires an explicit isolated `--workspace`.
 
 ### Behavior studies
 
@@ -232,6 +232,22 @@ Float32 GPU trajectories can diverge from float64 CPU trajectories over many ste
 
 ## Experiments
 
+The gallery's **Batches** tab runs controlled comparisons in the background. Select an entry, choose a parameter and enter comma-separated values, set the observation horizon and backend, then click **Run batch**. It supports growth mean/width and integer kernel radius. **Generate new fields from saved seed recipe** additionally enables pair separation (or cluster radius) and pair angle, with consecutive seeds reused across every parameter value. The saved recipe must be available; this mode generates fresh initial conditions rather than reconstructing the saved organism. Patch sizes use each run's kernel radius. Exact-field mode keeps all starting cell values fixed, including when R changes; it does not rescale the organism.
+
+Each run saves its actual initial and final checkpoints, the behavior report and time series. A batch also retains the source checkpoint, its plan, checksums, and `summary.csv`. Runs are sequential with at most 256 per batch; the UI estimates field storage before starting. The live simulation and original gallery entry are unchanged. Stop keeps completed runs and the current partial endpoint. Closing the app requests the same stop. A crash or solver/write failure leaves the batch marked incomplete and preserves already committed runs; automatic continuation is not implemented. The explicit backend never silently falls back to another arithmetic implementation. GPU initial rounding is recorded.
+
+Select a result row to **Load initial field** or **Load final field**, paused, as the new Reset starting field. You can then evolve it or add it to the gallery. **Save outcome label** records your assessment (for example spheres, tubes, transient, or unknown) at that run's stated horizon. No morphology classifier is inferred from mean activity or mismatch. **Open batch folder / CSV** exposes the files; results and labels also reload when the gallery is reopened. Batches live under `gallery/<entry-id>/batches/`, separately from single behavior reports. The same engine is available through the CLI:
+
+```powershell
+# Replay exactly the same saved field at three growth means (new output directory required)
+.\LeniascopeCli.exe batch organism.lenia --parameter mu --values 0.14,0.15,0.16 --steps 1000 --sample-every 100 --backend cuda --output organism-means
+
+# Use a checkpoint carrying a pair seed recipe: three separations, ten paired seeds, thirty runs
+.\LeniascopeCli.exe batch pair-seed.lenia --parameter spread --values 1,1.5,2 --seeds 10 --first-seed 216 --steps 1000 --sample-every 100 --backend cuda --output pair-separations
+```
+
+The batch horizon is measured in additional steps at the source's unchanged timestep; the CSV includes elapsed simulation time and marks partial runs. Separation is the requested placement distance in units of R, with periodic wrapping, not a measured final distance. Saved fields are the ground truth when patches overlap or wrap. Labels are editable independently of those fields; the CSV is an export, and labels should be edited in the app.
+
 ```powershell
 # Seeded 3D experiment, periodic checkpoints, and measurements
 .\x64\Modern\Release\LeniascopeCli.exe run --dimensions 3 --size 128 --radius 26 --seed 7 --steps 1000 --backend gpu --sample-every 10 --checkpoint-every 100 --csv run.csv --output final.lenia
@@ -285,7 +301,7 @@ These are short local headless measurements, not universal speedups or display f
 
 ## Research direction and next work
 
-The gallery stores actual fields with previews, model parameters, provenance and numerical backend, and now attaches repeatable behavior measurements over a specified duration. A seed recipe alone cannot stand in for a discovered organism. Candidate/reference labels remain manual; they are not proofs of stability. Next, use the saved single Orbium, separated pairs and transient conjoined pairs to compare trajectories and refine measurement intervals. The items below are research plans, not implemented classifiers or established explanations.
+The gallery stores actual fields with previews, model parameters, provenance and numerical backend, and attaches repeatable behavior measurements over a specified duration. Batches now support exact-field parameter comparisons and repeated seed-recipe sweeps, saved endpoints and manual outcome labels. A seed recipe alone cannot stand in for a discovered organism. Candidate/reference labels remain manual; they are not proofs of stability. Next, use the saved single Orbium, separated pairs and transient conjoined pairs to compare trajectories and refine measurement intervals. The items below are research plans, not implemented classifiers or established explanations.
 
 The first 2D field editor now provides paused selection, copy, rotation, placement, shaped random patches, undo and saved construction history. Constructed pairs can be compared at controlled separations and orientations while retaining their original gallery entries. Revolving a 2D pattern around a chosen movement axis into a 3D field is a later extension: its axis, interpolation, spatial scale and 3D model parameters need explicit choices. That construction supplies an initial condition, without assuming the 2D dynamics or organism will survive in 3D.
 

@@ -1,3 +1,4 @@
+#include "batch.h"
 #include "behavior.h"
 #include "file_integrity.h"
 #include "gallery.h"
@@ -36,10 +37,76 @@ int main(int argc, char **argv) {
                    "study checkpoint.lenia --output new-directory [--steps 1000] [--sample-every 20]\n"
                    "    [--backend cpu|gpu|cuda] [--threshold 0.01] (behavior report and CSV; input "
                    "unchanged)\n"
+                   "batch checkpoint.lenia --output new-directory --parameter mu|sigma|radius|spread|angle\n"
+                   "    --values 0.14,0.15,0.16 [--steps 1000] [--sample-every 100] [--threshold 0.01]\n"
+                   "    [--backend cpu|gpu|cuda] [--seeds 3 --first-seed 1]\n"
+                   "    --seeds regenerates the saved recipe; otherwise replays the exact saved field.\n"
                    "GPU uses float32; CPU uses float64. Sweep outputs append .run-N.\n";
             return 0;
         }
         std::string command = argv[1];
+        if (command == "batch") {
+            if (argc < 3)
+                throw std::invalid_argument("batch needs a checkpoint path");
+            BatchPlan plan;
+            std::string output;
+            std::map<std::string, bool> seen;
+            for (int i = 3; i < argc; i += 2) {
+                std::string key = argv[i];
+                if (i + 1 >= argc || seen[key])
+                    throw std::invalid_argument("Duplicate or incomplete batch option");
+                seen[key] = true;
+                std::string value = argv[i + 1];
+                size_t end = 0;
+                if (key == "--output")
+                    output = value;
+                else if (key == "--parameter")
+                    plan.axis = batch_axis(value);
+                else if (key == "--values")
+                    plan.values = batch_values(value);
+                else if (key == "--backend")
+                    plan.backend = value;
+                else if (key == "--first-seed") {
+                    if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+                        throw std::invalid_argument("Invalid batch seed");
+                    plan.first_seed = std::stoull(value);
+                } else if (key == "--threshold") {
+                    plan.observation.activity_threshold = std::stod(value, &end);
+                    if (end != value.size())
+                        throw std::invalid_argument("Invalid batch threshold");
+                } else if (key == "--steps" || key == "--sample-every" || key == "--seeds") {
+                    int number = std::stoi(value, &end);
+                    if (end != value.size())
+                        throw std::invalid_argument("Invalid batch integer");
+                    if (key == "--steps")
+                        plan.observation.steps = number;
+                    else if (key == "--sample-every")
+                        plan.observation.sample_every = number;
+                    else {
+                        plan.reseed = true;
+                        plan.repetitions = number;
+                    }
+                } else
+                    throw std::invalid_argument("Unknown batch option: " + key);
+            }
+            if (output.empty() || !seen["--parameter"] || !seen["--values"] ||
+                (seen["--first-seed"] && !plan.reseed))
+                throw std::invalid_argument(
+                    "Specify batch output, parameter and values; first-seed requires seeds");
+            auto input = std::filesystem::u8path(argv[2]);
+            auto hash = file_checksum(input);
+            auto source = load_state(argv[2]);
+            if (file_checksum(input) != hash)
+                throw std::runtime_error("Batch input changed while loading");
+            auto result = run_batch(std::filesystem::u8path(output), source, plan,
+                                    input.filename().u8string(), study_solver);
+            std::cout << batch_csv(result);
+            std::cerr << "Batch " << result.status << ": " << result.runs.size() << '/' << plan.count()
+                      << " runs saved in " << output << '\n';
+            if (!result.error.empty())
+                std::cerr << result.error << '\n';
+            return result.status == "complete" ? 0 : 2;
+        }
         if (command == "study") {
             if (argc < 3)
                 throw std::invalid_argument("study needs a checkpoint path");

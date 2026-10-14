@@ -55,31 +55,35 @@ void view_controls(ViewSettings &v, bool volume, const ViewerOptions &options) {
         ImGui::SliderFloat("Z", &v.offset[2], 0, 1, "%.3f");
     if (ImGui::Button("Reset origin"))
         std::fill(std::begin(v.offset), std::end(v.offset), 0.f);
-    if (!options.components) {
-        ImGui::SeparatorText("Appearance");
-        const auto &palettes = Renderer::palette_names();
-        if (ImGui::BeginCombo("Palette", palettes.at(v.palette).c_str())) {
-            for (size_t i = 0; i < palettes.size(); ++i)
-                if (ImGui::Selectable(palettes[i].c_str(), v.palette == int(i)))
-                    v.palette = int(i);
-            ImGui::EndCombo();
-        }
-        if (spatial) {
-            if (v.view == 1)
-                ImGui::SliderFloat("Opacity", &v.opacity, .1f, 10, "%.2f");
-            if (options.measured_threshold)
-                ImGui::Text("Measured threshold: %.6g", *options.measured_threshold);
-            else
-                ImGui::SliderFloat(v.view == 2 ? "Surface value" : "Opacity floor", &v.threshold, 0, 1,
-                                   "%.3f");
-        }
+    ImGui::BeginGroup();
+    ImGui::BeginDisabled(options.components);
+    ImGui::SeparatorText("Appearance");
+    const auto &palettes = Renderer::palette_names();
+    if (ImGui::BeginCombo("Palette", palettes.at(v.palette).c_str())) {
+        for (size_t i = 0; i < palettes.size(); ++i)
+            if (ImGui::Selectable(palettes[i].c_str(), v.palette == int(i)))
+                v.palette = int(i);
+        ImGui::EndCombo();
     }
-    if (!options.components && spatial) {
+    if (spatial) {
+        if (v.view == 1)
+            ImGui::SliderFloat("Opacity", &v.opacity, .1f, 10, "%.2f");
+        if (options.measured_threshold)
+            ImGui::Text("Measured threshold: %.6g", *options.measured_threshold);
+        else
+            ImGui::SliderFloat(v.view == 2 ? "Surface value" : "Opacity floor", &v.threshold, 0, 1, "%.3f");
+    }
+    if (spatial) {
         ImGui::SeparatorText("Rendering quality");
         ImGui::SliderFloat("Sample spacing", &v.quality, .3f, 2, "%.2f");
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
             ImGui::SetTooltip("Smaller spacing gives finer rendering detail.");
     }
+    ImGui::EndDisabled();
+    ImGui::EndGroup();
+    if (options.components &&
+        ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("Switch to Scalar field in Study to adjust these settings.");
 }
 } // namespace
 double draw_viewer(const char *id, Renderer &renderer, const Config &config, ViewSettings &v, ViewerUi &ui,

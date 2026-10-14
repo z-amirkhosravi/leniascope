@@ -47,6 +47,7 @@ void tests() {
     const ImVec2 size{320, 240};
     ImVec2 left, right;
     float scroll = 0;
+    std::string saved_controls;
     auto frame = [&] {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos({0, 0});
@@ -59,7 +60,10 @@ void tests() {
         draw_viewer("Live", a, field.config, live, live_ui, size, 1);
         ImGui::SameLine();
         right = ImGui::GetCursorScreenPos();
+        ImGui::LogToBuffer(0);
         draw_viewer("Saved", b, field.config, saved, saved_ui, size, 1, options);
+        saved_controls = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
         ImGui::Dummy({1, 900});
         scroll = ImGui::GetScrollY();
         ImGui::EndChild();
@@ -150,6 +154,10 @@ void tests() {
     require(saved_ui.controls_open && live_ui.controls_open && saved_window != live_window &&
                 GImGui->OpenPopupStack.empty(),
             "Viewers did not retain independent inspectors");
+    for (const auto *label :
+         {"Appearance", "Palette", "Opacity", "Measured threshold", "Rendering quality", "Sample spacing"})
+        require(saved_controls.find(label) != std::string::npos,
+                "Component view hid the scalar rendering controls");
     // Closing one with its titlebar X must leave the other open.
     click(saved_window->Pos.x + saved_window->Size.x - ImGui::GetStyle().FramePadding.x -
               ImGui::GetFontSize() * .5f,

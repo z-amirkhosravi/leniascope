@@ -151,16 +151,5 @@ void StudyPanel::draw_shape(float dpi, bool closing) {
         if (ImGui::CollapsingHeader("Measurement details"))
             draw_shape_summary(shape->shape, selected->state.config, shape->threshold);
     }
-    if (ImGui::CollapsingHeader("How to interpret shapes")) {
-        ImGui::TextWrapped(
-            "The threshold changes what is connected: a faint bridge may join two regions. "
-            "Try several thresholds when comparing shapes. Corner-only contacts are separate.");
-        ImGui::TextWrapped(
-            "Components count regions of active material, not their boundary surfaces. A hollow "
-            "shell can be one region with inner and outer surfaces. Periodic loops describe "
-            "winding around the domain, not genus or knotting. Those require further analysis.");
-        ImGui::TextWrapped("New behavior studies and batches record these measurements at every sampled time "
-                           "using their activity threshold, and include them in CSV exports.");
-    }
 }
 } // namespace lenia

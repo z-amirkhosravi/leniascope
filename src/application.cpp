@@ -89,7 +89,7 @@ void style(float scale) {
     s.FrameRounding = 4;
     s.GrabRounding = 4;
     s.WindowBorderSize = 0;
-    s.FramePadding = {10, 7};
+    s.FramePadding = {10, 3};
     s.ItemSpacing = {10, 9};
     s.WindowPadding = {18, 16};
     s.Colors[ImGuiCol_WindowBg] = {.055f, .069f, .09f, 1};

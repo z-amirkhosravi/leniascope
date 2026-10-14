@@ -148,12 +148,14 @@ void tests() {
     // A section expands the tool to fit its controls instead of reserving an empty overlay.
     const float collapsed_height = live_window->Size.y;
     const auto &style = ImGui::GetStyle();
-    const float origin_header_y = moved.y + live_window->TitleBarHeight + style.WindowPadding.y +
-                                  2 * ImGui::GetFrameHeightWithSpacing() + ImGui::GetFrameHeight() * .5f;
-    click(moved.x + 50, origin_header_y);
+    const float appearance_header_y = moved.y + live_window->TitleBarHeight + style.WindowPadding.y +
+                                      6 * ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeight() +
+                                      2 * style.SeparatorTextPadding.y + style.ItemSpacing.y +
+                                      ImGui::GetFrameHeight() * .5f;
+    click(moved.x + 50, appearance_header_y);
     frame();
     require(live_window->Size.y > collapsed_height, "Inspector did not expand with its section");
-    click(moved.x + 50, origin_header_y);
+    click(moved.x + 50, appearance_header_y);
     frame();
     require(live_window->Size.y == collapsed_height, "Inspector retained empty space after collapsing");
     click(right.x + size.x - 15, right.y + size.y - 12);

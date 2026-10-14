@@ -48,14 +48,13 @@ void view_controls(ViewSettings &v, bool volume, const ViewerOptions &options) {
     }
     if (ImGui::Button("Reset camera"))
         reset_camera(v);
-    if (ImGui::CollapsingHeader("Periodic origin")) {
-        ImGui::SliderFloat("X", &v.offset[0], 0, 1, "%.3f");
-        ImGui::SliderFloat("Y", &v.offset[1], 0, 1, "%.3f");
-        if (volume)
-            ImGui::SliderFloat("Z", &v.offset[2], 0, 1, "%.3f");
-        if (ImGui::Button("Reset origin"))
-            std::fill(std::begin(v.offset), std::end(v.offset), 0.f);
-    }
+    ImGui::SeparatorText("Periodic origin");
+    ImGui::SliderFloat("X", &v.offset[0], 0, 1, "%.3f");
+    ImGui::SliderFloat("Y", &v.offset[1], 0, 1, "%.3f");
+    if (volume)
+        ImGui::SliderFloat("Z", &v.offset[2], 0, 1, "%.3f");
+    if (ImGui::Button("Reset origin"))
+        std::fill(std::begin(v.offset), std::end(v.offset), 0.f);
     if (!options.components && ImGui::CollapsingHeader("Appearance")) {
         const auto &palettes = Renderer::palette_names();
         if (ImGui::BeginCombo("Palette", palettes.at(v.palette).c_str())) {

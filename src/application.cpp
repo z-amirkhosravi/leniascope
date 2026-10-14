@@ -252,6 +252,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         preferences.seeds, preferences.cuda, std::move(restored.reset_states));
     runner.speed(preferences.steps_per_second);
     auto &views = preferences.views;
+    ViewerUi live_viewer;
     GalleryPanel gallery(access ? access->directory / L"gallery" : std::filesystem::path{},
                          access && access->writable(), gpu_context);
     StudyPanel study(access ? access->directory / L"studies" : std::filesystem::path{},
@@ -508,6 +509,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         try {
             if (ImGui::Button(frame && frame->running ? "Pause" : "Play", {88 * dpi, 0}) ||
                 (frame && inspector_tab == 0 && !close_requested && !gallery.active() && !editor.active() &&
+                 ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
                  !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
                  ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
                 runner.play(!(frame && frame->running));
@@ -848,8 +850,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             ImVec2 image_size = ImGui::GetContentRegionAvail();
             image_size.y = std::max(1.f, image_size.y - 118 * dpi);
             image_size.x = std::max(1.f, image_size.x);
-            draw_submit_ms = draw_viewer("Live viewer", renderer, frame ? frame->state.config : edit, view,
-                                         image_size, dpi);
+            draw_submit_ms = draw_viewer("Simulation", renderer, frame ? frame->state.config : edit, view,
+                                         live_viewer, image_size, dpi);
             if (frame) {
                 ImGui::Text("%.1f steps/s    %.2f ms compute    %.0f display fps", frame->steps_per_second,
                             frame->timings.total_ms, io.Framerate);

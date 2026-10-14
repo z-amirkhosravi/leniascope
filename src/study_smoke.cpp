@@ -144,6 +144,7 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
             smoke_phase = 18;
             break;
         }
+        viewer_ui.controls_open = true; // Include the floating inspector in the final UI capture.
         ++smoke_phase;
         return true;
     case 18:

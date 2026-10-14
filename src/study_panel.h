@@ -1,8 +1,8 @@
 #pragma once
 #include "batch.h"
 #include "gallery.h"
-#include "renderer.h"
 #include "runner.h"
+#include "viewer.h"
 #include <atomic>
 #include <future>
 
@@ -82,6 +82,7 @@ class StudyPanel {
     std::optional<State> captured;
     std::array<ViewSettings, 2> capture_views;
     ViewSettings shape_view, restore_view;
+    ViewerUi viewer_ui;
     int restore_mode = 0, tool = 0;
     std::string message, write_error;
     BehaviorOptions study_options;

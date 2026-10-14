@@ -325,8 +325,8 @@ double StudyPanel::draw_scene(float dpi, bool closing) {
             options.isolate = shape_component;
             options.measured_threshold = float(shape->threshold);
         }
-        submit =
-            draw_viewer("Study viewer", *renderer, selected->state.config, shape_view, size, dpi, options);
+        submit = draw_viewer("Study", *renderer, selected->state.config, shape_view, viewer_ui, size, dpi,
+                             options);
     };
     if (tool == 0)
         field();

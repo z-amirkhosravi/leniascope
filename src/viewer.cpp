@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <string>
 
 namespace lenia {
 namespace {
@@ -35,18 +36,15 @@ void reset_camera(ViewSettings &v) {
     v.distance = defaults.distance;
     v.zoom = defaults.zoom;
 }
-void view_menu(ViewSettings &v, bool volume, const ViewerOptions &options) {
+void view_controls(ViewSettings &v, bool volume, const ViewerOptions &options) {
     const bool spatial = volume && v.view != 0;
-    ImGui::TextDisabled("VIEW");
     if (spatial) {
-        ImGui::SliderFloat("Distance", &v.distance, .7f, 5, "%.2f");
         ImGui::SliderFloat("Cutaway Z", &v.clip, 0, 1, "%.3f");
     } else {
         if (volume) {
             ImGui::Combo("Slice axis", &v.axis, "X\0Y\0Z\0");
             ImGui::SliderFloat("Position", &v.slice, 0, .999999f, "%.3f");
         }
-        ImGui::SliderFloat("Zoom", &v.zoom, .25f, 4, "%.2f");
     }
     if (ImGui::Button("Reset camera"))
         reset_camera(v);
@@ -57,8 +55,6 @@ void view_menu(ViewSettings &v, bool volume, const ViewerOptions &options) {
             ImGui::SliderFloat("Z", &v.offset[2], 0, 1, "%.3f");
         if (ImGui::Button("Reset origin"))
             std::fill(std::begin(v.offset), std::end(v.offset), 0.f);
-        ImGui::TextWrapped("Moves the displayed cut through the periodic field. The field itself stays in "
-                           "place.");
     }
     if (!options.components && ImGui::CollapsingHeader("Appearance")) {
         const auto &palettes = Renderer::palette_names();
@@ -80,16 +76,13 @@ void view_menu(ViewSettings &v, bool volume, const ViewerOptions &options) {
     }
     if (!options.components && spatial && ImGui::CollapsingHeader("Rendering quality")) {
         ImGui::SliderFloat("Sample spacing", &v.quality, .3f, 2, "%.2f");
-        ImGui::TextWrapped("Smaller spacing samples the volume more finely and takes more rendering work. "
-                           "Simulation accuracy is unchanged.");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Smaller spacing gives finer rendering detail.");
     }
-    if (options.components)
-        ImGui::TextWrapped("Colors identify measured components. Cutaway and slices change visibility, "
-                           "while the measured connectivity stays the same.");
 }
 } // namespace
-double draw_viewer(const char *id, Renderer &renderer, const Config &config, ViewSettings &v, ImVec2 size,
-                   float dpi, const ViewerOptions &options) {
+double draw_viewer(const char *id, Renderer &renderer, const Config &config, ViewSettings &v, ViewerUi &ui,
+                   ImVec2 size, float dpi, const ViewerOptions &options) {
     ImGui::PushID(id);
     ImGui::BeginGroup();
     const bool volume = config.depth > 1, spatial = volume && v.view != 0;
@@ -165,24 +158,48 @@ double draw_viewer(const char *id, Renderer &renderer, const Config &config, Vie
     ImGui::SameLine();
     const float button_width = ImGui::CalcTextSize("View").x + 12 * dpi;
     ImGui::SetCursorScreenPos({origin.x + std::max(0.f, size.x - button_width), origin.y + size.y + 2 * dpi});
-    const bool open = ImGui::Button("View", {button_width, 0});
+    if (ui.controls_open)
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+    const bool toggle = ImGui::Button("View", {button_width, 0});
+    if (ui.controls_open)
+        ImGui::PopStyleColor();
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar(2);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-        ImGui::SetTooltip(
-            spatial
-                ? "Drag the image to orbit; wheel to zoom.\nCamera, cutaway, periodic origin and appearance."
-                : "Wheel over the image to zoom.\nSlice, periodic origin and appearance.");
-    if (open)
-        ImGui::OpenPopup("View options");
-    const auto *viewport = ImGui::GetMainViewport();
-    const float width = std::min(340 * dpi, viewport->WorkSize.x - 20 * dpi);
-    ImGui::SetNextWindowSizeConstraints({width, 0}, {width, std::max(1.f, viewport->WorkSize.y - 20 * dpi)});
-    if (ImGui::BeginPopup("View options")) {
-        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * .57f);
-        view_menu(v, volume, options);
-        ImGui::PopItemWidth();
-        ImGui::EndPopup();
+        ImGui::SetTooltip("Show or hide view controls");
+    if (toggle)
+        ui.controls_open = !ui.controls_open;
+    if (ui.controls_open) {
+        const auto *viewport = ImGui::GetMainViewport();
+        const float margin = 8 * dpi;
+        const ImVec2 extent{std::max(1.f, viewport->WorkSize.x - 2 * margin),
+                            std::max(1.f, viewport->WorkSize.y - 2 * margin)};
+        const float width = std::min(340 * dpi, extent.x);
+        ImGui::SetNextWindowPos({origin.x + size.x - width - margin, origin.y + margin},
+                                ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSizeConstraints({width, 0}, {width, extent.y});
+        if (toggle)
+            ImGui::SetNextWindowFocus();
+        // A normal window keeps the image interactive and stays tied to this viewer's lifetime.
+        // The parent scene must not raise over tool windows when its canvas receives focus.
+        const auto name =
+            std::string(id) + " view###view-controls-" + std::to_string(ImGui::GetID("Controls"));
+        const bool visible =
+            ImGui::Begin(name.c_str(), &ui.controls_open,
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
+        const auto position = ImGui::GetWindowPos(), window_size = ImGui::GetWindowSize();
+        const ImVec2 lower{viewport->WorkPos.x + margin, viewport->WorkPos.y + margin};
+        const ImVec2 bounded{
+            std::clamp(position.x, lower.x, lower.x + std::max(0.f, extent.x - window_size.x)),
+            std::clamp(position.y, lower.y, lower.y + std::max(0.f, extent.y - window_size.y))};
+        if (position.x != bounded.x || position.y != bounded.y)
+            ImGui::SetWindowPos(bounded); // Keep controls reachable after a resize or DPI change.
+        if (visible) {
+            ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * .57f);
+            view_controls(v, volume, options);
+            ImGui::PopItemWidth();
+        }
+        ImGui::End();
     }
     ImGui::SetCursorScreenPos({origin.x, origin.y + size.y + footer});
     ImGui::Dummy({size.x, 0});

@@ -71,12 +71,15 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
     case 8:
         if (signature(smoke_check.get()) != smoke_signature)
             throw std::runtime_error("Study changed the live field");
-        batch_plan.axis = BatchAxis::Spread;
-        batch_plan.reseed = true;
+        // Edited fields have no recipe; exercise an exact-field batch for those sources.
+        batch_plan.reseed =
+            selected->state.initialization && selected->state.initialization->layout != SeedLayout::Uniform;
+        batch_plan.axis = batch_plan.reseed ? BatchAxis::Spread : BatchAxis::Mu;
         batch_plan.repetitions = 1;
         batch_plan.first_seed = 216;
         batch_plan.observation = {5, 2, .01};
-        std::snprintf(batch_value_text, sizeof batch_value_text, "0.8, 1.5");
+        std::snprintf(batch_value_text, sizeof batch_value_text, "%s",
+                      batch_plan.reseed ? "0.8, 1.5" : "0.14, 0.16");
         tool = 2;
         begin_batch();
         ++smoke_phase;

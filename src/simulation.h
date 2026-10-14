@@ -55,6 +55,8 @@ struct Measures {
     double mean = 0, minimum = 0, maximum = 0, rms_change = 0;
 };
 std::vector<double> make_kernel(const Config &);
+// Unnormalized radial weight, with distance expressed in kernel radii.
+double kernel_profile(double distance);
 State random_state(Config, uint64_t seed, SeedSettings = {});
 double advance_value(double a, double neighborhood, const Config &);
 Measures measure(const std::vector<double> &, const std::vector<double> *previous = nullptr);

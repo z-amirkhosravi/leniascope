@@ -34,7 +34,7 @@ if(WIN32)
     endif()
     add_executable(LeniascopeCli src/cli.cpp)
     target_link_libraries(LeniascopeCli PRIVATE lenia_gpu)
-    add_executable(Leniascope WIN32 src/application.cpp src/desktop_workspace.cpp src/gallery_panel.cpp src/study_panel.cpp src/study_behavior.cpp src/study_batch.cpp src/study_shape.cpp src/study_smoke.cpp src/editor_panel.cpp src/renderer.cpp src/viewer.cpp cmap.cpp
+    add_executable(Leniascope WIN32 src/application.cpp src/desktop_workspace.cpp src/gallery_panel.cpp src/study_panel.cpp src/study_behavior.cpp src/study_batch.cpp src/study_shape.cpp src/study_smoke.cpp src/editor_panel.cpp src/renderer.cpp src/viewer.cpp src/model_panel.cpp cmap.cpp
         third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
         third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
         third_party/imgui/backends/imgui_impl_dx11.cpp
@@ -56,9 +56,9 @@ if(WIN32)
     copy_fftw(Leniascope)
     copy_fftw(LeniascopeCli)
     if(BUILD_TESTING)
-        add_executable(ViewerTests tests/viewer_tests.cpp tests/study_ui_tests.cpp src/desktop_workspace.cpp
+        add_executable(ViewerTests tests/viewer_tests.cpp tests/study_ui_tests.cpp tests/model_panel_tests.cpp src/desktop_workspace.cpp
             src/study_panel.cpp src/study_shape.cpp src/study_behavior.cpp src/study_batch.cpp
-            src/viewer.cpp src/renderer.cpp cmap.cpp
+            src/viewer.cpp src/model_panel.cpp src/renderer.cpp cmap.cpp
             third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
             third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp)
         target_include_directories(ViewerTests PRIVATE third_party/imgui)

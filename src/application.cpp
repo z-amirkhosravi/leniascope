@@ -5,6 +5,7 @@
 #include "editor_panel.h"
 #include "gallery_panel.h"
 #include "imgui.h"
+#include "model_panel.h"
 #include "renderer.h"
 #include "runner.h"
 #include "study_panel.h"
@@ -256,6 +257,9 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     runner.speed(preferences.steps_per_second);
     auto &views = preferences.views;
     ViewerUi live_viewer;
+    ModelPanel model(gpu_context);
+    if (smoke && !options.gallery_smoke && !options.editor_smoke && !options.profile)
+        model.toggle();
     GalleryPanel gallery(access ? access->directory / L"gallery" : std::filesystem::path{},
                          access && access->writable(), gpu_context);
     StudyPanel study(access ? access->directory / L"studies" : std::filesystem::path{},
@@ -590,43 +594,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                     ImGui::SetTooltip(
                         "CPU uses double precision. GPU trajectories may diverge over long runs.");
                 ImGui::Spacing();
-                ImGui::Text("Model parameters");
-                float mu = float(edit.mu), sigma = float(edit.sigma), dt = float(edit.dt);
-                if (ImGui::SliderFloat("Mean", &mu, .01f, .5f, "%.4f")) {
-                    edit.mu = mu;
-                    dirty_config = true;
-                }
-                if (ImGui::SliderFloat("Width", &sigma, .001f, .1f, "%.4f")) {
-                    edit.sigma = sigma;
-                    dirty_config = true;
-                }
-                if (ImGui::SliderFloat("Time step", &dt, .001f, .5f, "%.4f")) {
-                    edit.dt = dt;
-                    dirty_config = true;
-                }
-                int max_radius = std::min(edit.width, edit.height) / 2;
-                if (edit.depth > 1)
-                    max_radius = std::min(max_radius, edit.depth / 2);
-                if (ImGui::SliderInt("Radius", &edit.radius, 1, max_radius))
-                    dirty_config = true;
-                int rule = int(edit.rule);
-                if (ImGui::Combo("Rule", &rule, "Classic Lenia\0Smooth reaction (experiment)\0")) {
-                    edit.rule = Rule(rule);
-                    dirty_config = true;
-                }
-                if (rule == 1 && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                    ImGui::SetTooltip("Smooth bounded birth/death dynamics; empty regions can nucleate.");
-                if (rule == 1) {
-                    float sharp = float(edit.smoothness);
-                    if (ImGui::SliderFloat("Sharpness", &sharp, 1, 40)) {
-                        edit.smoothness = sharp;
-                        dirty_config = true;
-                    }
-                }
-                if (ImGui::Button(dirty_config ? "Apply changes *" : "Apply changes", {-1, 0})) {
-                    runner.parameters(edit);
-                    dirty_config = false;
-                }
+                if (ImGui::Button("Model parameters", {-1, 0}))
+                    model.toggle();
                 if (ImGui::CollapsingHeader("Grid and initialization", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderInt("Power of two", &grid_power, 4, is_volume ? 8 : 11);
                     ImGui::Text("%d x %d%s", 1 << grid_power, 1 << grid_power, is_volume ? " x same" : "");
@@ -884,6 +853,15 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             ImGui::EndPopup();
         }
         ImGui::End();
+        try {
+            if (model.draw(edit, frame ? frame->state.config : edit, dpi,
+                           close_requested || !frame || editor.active()))
+                runner.parameters(edit);
+            if (frame)
+                dirty_config = !same_model_parameters(edit, frame->state.config);
+        } catch (const std::exception &e) {
+            local_message = e.what();
+        }
         gallery.draw(runner, views, study, dpi, close_requested);
         editor.draw(runner, dpi, close_requested);
         ImGui::Render();

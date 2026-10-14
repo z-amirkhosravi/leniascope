@@ -35,6 +35,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="viewer_tests.cpp" />
+    <ClCompile Include="model_panel_tests.cpp" />
     <ClCompile Include="study_ui_tests.cpp" />
     <ClCompile Include="..\src\study_panel.cpp" />
     <ClCompile Include="..\src\study_shape.cpp" />
@@ -55,6 +56,7 @@
     <ClCompile Include="..\src\renderer.cpp" />
     <ClCompile Include="..\src\workspace.cpp" />
     <ClCompile Include="..\src\viewer.cpp" />
+    <ClCompile Include="..\src\model_panel.cpp" />
     <ClCompile Include="..\cmap.cpp" />
     <ClCompile Include="..\src\simulation.cpp" />
   </ItemGroup>

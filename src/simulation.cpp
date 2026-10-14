@@ -84,6 +84,9 @@ bool Config::operator==(const Config &c) const {
     return width == c.width && height == c.height && depth == c.depth && radius == c.radius && mu == c.mu &&
            sigma == c.sigma && dt == c.dt && smoothness == c.smoothness && rule == c.rule;
 }
+double kernel_profile(double distance) {
+    return distance >= 0 && distance < 1 ? gaussian(distance, .5, .15) : 0;
+}
 std::vector<double> make_kernel(const Config &c) {
     c.validate();
     std::vector<double> k(c.count());
@@ -93,9 +96,9 @@ std::vector<double> make_kernel(const Config &c) {
         for (int y = -r + 1; y <= r; ++y)
             for (int x = -r + 1; x <= r; ++x) {
                 double rho = std::sqrt(double(x * x + y * y + z * z)) / r;
-                if (rho >= 1)
+                double v = kernel_profile(rho);
+                if (v == 0)
                     continue;
-                double v = gaussian(rho, .5, .15);
                 k[(size_t(wrap(z, c.depth)) * c.height + wrap(y, c.height)) * c.width + wrap(x, c.width)] +=
                     v;
                 sum += v;

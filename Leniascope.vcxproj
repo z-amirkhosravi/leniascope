@@ -65,6 +65,7 @@
     <ClCompile Include="src\runner.cpp" />
     <ClCompile Include="src\renderer.cpp" />
     <ClCompile Include="src\viewer.cpp" />
+    <ClCompile Include="src\model_panel.cpp" />
     <ClCompile Include="cmap.cpp" />
     <ClCompile Include="third_party\imgui\imgui.cpp" />
     <ClCompile Include="third_party\imgui\imgui_draw.cpp" />

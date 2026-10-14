@@ -105,6 +105,8 @@ Panel navigation must not implicitly select, replace, pause, or hide a field. Sn
 
 Interface changes should be evaluated as complete exploration workflows: adjust a parameter while inspecting the field, compare views without losing the camera, and return to the simulation without changing its state. Keep the Simulation/Study structure stable, float iterative display controls only when useful, and put explanatory material in documentation or short tooltips. Tests should exercise the interaction between controls and the field, not just each widget in isolation.
 
+Control panels should show controls, labels, current state, measurements, and actionable problems. Do not add permanent instructional paragraphs beneath controls or tutorial sections among results. Use concise delayed hover tooltips for routine control explanations; keep longer interpretations here in the documentation.
+
 ## Initialization and grid size
 
 The ten-patch default is reproducible and unchanged: each box side is independently uniform from 0.6 to 1.2 times the kernel radius, rounded down to at least one cell, with uniform values in [0,1]. Boxes wrap on the torus; overlaps overwrite earlier values. Larger custom boxes are capped at each grid dimension. Zero patches produces an empty field. Settings are validated, and excessively overlapping jobs are rejected before allocating a new field.

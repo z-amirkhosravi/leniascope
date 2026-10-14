@@ -620,14 +620,14 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                     edit.rule = Rule(rule);
                     dirty_config = true;
                 }
+                if (rule == 1 && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                    ImGui::SetTooltip("Smooth bounded birth/death dynamics; empty regions can nucleate.");
                 if (rule == 1) {
                     float sharp = float(edit.smoothness);
                     if (ImGui::SliderFloat("Sharpness", &sharp, 1, 40)) {
                         edit.smoothness = sharp;
                         dirty_config = true;
                     }
-                    ImGui::TextWrapped(
-                        "Smooth bounded birth/death model. Different dynamics; empty regions can nucleate.");
                 }
                 if (ImGui::Button(dirty_config ? "Apply changes *" : "Apply changes", {-1, 0})) {
                     runner.parameters(edit);
@@ -653,6 +653,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                         if (seed_settings.layout == SeedLayout::Pair)
                             seed_settings.patches = 2;
                     }
+                    if (layout != 0 && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                        ImGui::SetTooltip("Centred on the grid; patch count stays fixed when resizing.");
                     ImGui::BeginDisabled(seed_settings.layout == SeedLayout::Pair);
                     ImGui::InputInt("Patches", &seed_settings.patches);
                     seed_settings.patches = std::clamp(seed_settings.patches, 0, 4096);
@@ -676,9 +678,6 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                             if (is_volume && ImGui::SliderFloat("Elevation", &elevation, -90, 90, "%.1f deg"))
                                 seed_settings.elevation = elevation;
                         }
-                        ImGui::TextWrapped(
-                            "Centred on the grid. Resizing keeps the patch count; spread and size "
-                            "use the kernel radius.");
                     }
                     float size_min = float(seed_settings.size_min), size_max = float(seed_settings.size_max);
                     if (ImGui::DragFloatRange2("Side / radius", &size_min, &size_max, .01f, .05f, 4.f,
@@ -698,9 +697,6 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                         seed_settings.value_min = value_min;
                         seed_settings.value_max = value_max;
                     }
-                    ImGui::TextWrapped(frame && frame->has_initial_field
-                                           ? "Seed controls affect Preview seed, New seed, and Create grid."
-                                           : "Seed controls affect Reset, New seed, and Create grid.");
                     if (ImGui::Button("Ten-patch defaults", {-1, 0}))
                         seed_settings = SeedSettings{};
                     const auto &current = frame ? frame->state.config : edit;
@@ -708,6 +704,9 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                         runner.play(false);
                         runner.randomize(current, seed, seed_settings);
                     }
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                        ImGui::SetTooltip(
+                            "Generate a paused field from these settings and the displayed seed.");
                     if (seed_settings.layout == SeedLayout::Uniform) {
                         double coverage = seed_coverage(current, seed_settings);
                         ImGui::Text("Expected coverage: %.2f%%", 100 * coverage);
@@ -725,9 +724,12 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                     if (seed_settings.layout != SeedLayout::Uniform) {
                         double diameter =
                             seed_settings.spread * (seed_settings.layout == SeedLayout::Cluster ? 2 : 1);
-                        if ((diameter + seed_settings.size_max) * current.radius + 1 >= minimum_side)
-                            ImGui::TextWrapped("This spread can reach periodic edges. Reduce spread/size or "
-                                               "enlarge the grid for more empty space around it.");
+                        if ((diameter + seed_settings.size_max) * current.radius + 1 >= minimum_side) {
+                            ImGui::TextWrapped("Patches may reach periodic edges.");
+                            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                                ImGui::SetTooltip(
+                                    "Reduce spread or patch size, or enlarge the grid for more empty space.");
+                        }
                     }
                     int maximum_side = seed_settings.size_min == seed_settings.size_max
                                            ? int(current.radius * seed_settings.size_max)
@@ -736,18 +738,14 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                                 std::clamp(int(current.radius * seed_settings.size_min), 1, minimum_side),
                                 std::clamp(maximum_side, 1,
                                            std::max({current.width, current.height, current.depth})));
-                    if (frame && frame->has_initial_field)
-                        ImGui::TextWrapped(
-                            "Reset restores the loaded or edited starting field and keeps your "
-                            "applied model parameters.");
-                    else if (frame && frame->state.initialization &&
-                             frame->state.initialization_radius != current.radius)
-                        ImGui::TextWrapped(
-                            "This field was seeded at radius %d. Reset uses the current radius %d.",
-                            frame->state.initialization_radius, current.radius);
-                    else if (frame && !frame->state.initialization)
-                        ImGui::TextWrapped(
-                            "This field has no stored seed recipe. Reset uses the controls above.");
+                    if (frame && !frame->has_initial_field) {
+                        if (frame->state.initialization &&
+                            frame->state.initialization_radius != current.radius)
+                            ImGui::Text("Seeding radius: %d; current radius: %d",
+                                        frame->state.initialization_radius, current.radius);
+                        else if (!frame->state.initialization)
+                            ImGui::TextDisabled("No seed recipe stored.");
+                    }
                     Config c = edit;
                     c.width = c.height = 1 << grid_power;
                     c.depth = is_volume ? c.width : 1;
@@ -820,8 +818,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 if (ImGui::CollapsingHeader("Workspace")) {
                     ImGui::BeginDisabled(!writer);
                     ImGui::Checkbox("Autosave and restore sessions", &preferences.recovery);
-                    ImGui::TextWrapped(
-                        "Both fields are saved every 30 seconds and on close. Reopening starts paused.");
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                        ImGui::SetTooltip("Save both fields every 30 seconds and on close. Reopen paused.");
                     if (ImGui::Button(preferences.recovery ? "Save workspace now" : "Save preferences now",
                                       {-1, 0}) &&
                         writer) {

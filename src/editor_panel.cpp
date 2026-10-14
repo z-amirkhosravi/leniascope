@@ -110,7 +110,7 @@ void EditorPanel::stamp() {
     auto [x, y] = anchor();
     draft->stamp(*rotated, x, y, PatchBlend(blend));
     upload = true;
-    message = "Placed in the draft. Apply field when the construction is ready.";
+    message = "Placed in the draft.";
 }
 void EditorPanel::apply(Runner &runner) {
     if (!draft || busy())
@@ -142,9 +142,10 @@ void EditorPanel::draw(Runner &runner, float dpi, bool closing) {
     ImGui::OpenPopup("Edit 2D field");
     if (!ImGui::BeginPopupModal("Edit 2D field", nullptr, ImGuiWindowFlags_NoSavedSettings))
         return;
-    ImGui::TextWrapped(
-        closing ? "Finish or discard this draft to close the application."
-                : "Paused draft. Apply starts a new experiment at t=0; Discard keeps the original field.");
+    if (closing)
+        ImGui::TextWrapped("Finish or discard this draft to close the application.");
+    else
+        ImGui::TextDisabled("Paused draft | %s", float32 ? "float32" : "float64");
     auto action = [&](auto &&f) {
         try {
             f();
@@ -156,10 +157,14 @@ void EditorPanel::draw(Runner &runner, float dpi, bool closing) {
     ImGui::BeginDisabled(!draft);
     if (ImGui::Button("Apply field"))
         action([&] { apply(runner); });
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("Replace the simulation with this draft at t=0 and use it for Reset.");
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Discard draft"))
         discard();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("Leave the original field paused; discard unapplied edits.");
     if (draft) {
         ImGui::SameLine();
         ImGui::BeginDisabled(!draft->undo_count());
@@ -168,6 +173,8 @@ void EditorPanel::draw(Runner &runner, float dpi, bool closing) {
                 draft->undo();
                 upload = true;
             });
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Ctrl+Z. Retains up to 32 operations within 128 MiB.");
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::BeginDisabled(!draft->redo_count());
@@ -228,12 +235,13 @@ void EditorPanel::draw(Runner &runner, float dpi, bool closing) {
             ImGui::TextDisabled("Clockwise degrees");
             if (ImGui::InputDouble("##clockwise", &angle, 1, 15, "%.2f"))
                 transform();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip(
+                    "Right angles preserve cells; other angles interpolate from the original copy.");
             if (ImGui::Button("Rotate 90 degrees", {-1, 0})) {
                 angle = std::fmod(angle + 90., 360.);
                 transform();
             }
-            ImGui::TextWrapped(
-                "Right angles preserve cells. Other angles interpolate from the original copy.");
             ImGui::TextDisabled("Centre X");
             bool move = ImGui::InputDouble("##centre-x", &center[0], 1, c.radius, "%.2f");
             ImGui::TextDisabled("Centre Y");
@@ -281,7 +289,7 @@ void EditorPanel::draw(Runner &runner, float dpi, bool closing) {
                 transform();
                 tool = 1;
                 upload = true;
-                message = "Patch ready. Click the field to place it; the seed controls its contents.";
+                message = "Patch ready for placement.";
             }
         }
         if (ImGui::CollapsingHeader("View origin")) {
@@ -289,19 +297,16 @@ void EditorPanel::draw(Runner &runner, float dpi, bool closing) {
                 origin[0] = wrap(origin[0], c.width);
                 origin[1] = wrap(origin[1], c.height);
             }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("Change the view origin without moving the field.");
             if (ImGui::Button("Centre selection in view", {-1, 0})) {
                 selection.validate(c);
                 origin[0] = wrap(wrap(selection.x, c.width) + selection.width / 2 - c.width / 2, c.width);
                 origin[1] = wrap(wrap(selection.y, c.height) + selection.height / 2 - c.height / 2, c.height);
             }
-            ImGui::TextWrapped(
-                "Only changes the view. Selections and placements wrap across periodic edges.");
         }
         if (ImGui::CollapsingHeader("Construction log"))
             ImGui::TextUnformatted(draft->operations().c_str());
-        ImGui::TextWrapped(
-            "Edits use %s. Undo retains up to 128 MiB / 32 operations; unapplied drafts are not autosaved.",
-            float32 ? "float32, matching the GPU field" : "float64");
     } catch (const std::exception &e) {
         message = e.what();
     }
@@ -398,9 +403,7 @@ void EditorPanel::draw(Runner &runner, float dpi, bool closing) {
                 }
             draw->PopClipRect();
         }
-        ImGui::TextWrapped(tool == 0
-                               ? "Drag a rectangle. Ctrl+C copies; Ctrl+Z / Ctrl+Y undo / redo."
-                               : "Preview only until placed. Click to stamp; Apply field commits the draft.");
+        ImGui::TextDisabled(tool == 0 ? "Drag to select | Ctrl+C to copy" : "Click to place");
     } catch (const std::exception &e) {
         message = e.what();
     }

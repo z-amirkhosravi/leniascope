@@ -49,8 +49,6 @@ void StudyPanel::save_study() {
     });
 }
 void StudyPanel::draw_study(float dpi, bool closing) {
-    ImGui::TextWrapped("Evolve a separate copy of the study source. Your simulation and source "
-                       "field are unchanged.");
     ImGui::SetNextItemOpen(study_settings_open);
     study_settings_open = ImGui::CollapsingHeader("Study settings");
     if (study_settings_open) {
@@ -73,8 +71,8 @@ void StudyPanel::draw_study(float dpi, bool closing) {
                      "CPU reference\0DirectCompute\0"
 #endif
         );
-        if (study_backend)
-            ImGui::TextWrapped("GPU evolution uses float32; any initial rounding is recorded.");
+        if (study_backend && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("GPU evolution uses float32; initial rounding is recorded in the report.");
         std::string error;
         try {
             study_options.validate();
@@ -95,6 +93,8 @@ void StudyPanel::draw_study(float dpi, bool closing) {
                 message = e.what();
             }
         }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Evolve and measure a separate copy of this snapshot.");
         ImGui::EndDisabled();
         ImGui::EndDisabled();
     }
@@ -102,8 +102,8 @@ void StudyPanel::draw_study(float dpi, bool closing) {
         ImGui::ProgressBar(float(study_progress.load()) / study_options.steps, {-1, 0});
         if (ImGui::Button("Stop study (keep results)"))
             stop_study();
-        ImGui::TextWrapped("Stopping waits for the current step or measurement. Large 3D fields can take "
-                           "time to correlate.");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Finish the current step or measurement, then save the results.");
     }
     if (job == Job::SaveStudy)
         ImGui::TextDisabled("Saving report...");
@@ -135,22 +135,12 @@ void StudyPanel::draw_study_results(float dpi) {
     ImGui::TextWrapped("%s", r.backend.c_str());
     ImGui::Text("Measured t = 0..%.6g; %zu samples", last.elapsed, r.samples.size());
     ImGui::Text("Initial rounding RMS: %.6g", r.initial_rounding_rms);
-    if (ImGui::CollapsingHeader("How to read these plots")) {
-        ImGui::TextWrapped(
-            "Mismatch measures accumulated difference from the starting field after one whole-field "
-            "translation. 1%% means RMS difference is 1%% of the starting field's RMS; it is not "
-            "the fraction of cells that changed.");
-        ImGui::TextWrapped(
-            "Default Y scales start at 0 and extend to at least 100%%. Magnification stretches "
-            "each plot to its own observed range. Read the Y labels before comparing heights.");
-    }
     ImGui::Checkbox("Magnify variations (independent Y scales)", &study_zoom);
-    if (ImGui::IsItemHovered())
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
         ImGui::SetTooltip("Magnification fills each plot's height, even for very small changes.\n"
                           "Uncheck to restore zero-based scales extending to at least 100%%.");
     // A stopped run may end with a shorter interval; the horizontal axis is sample index.
-    ImGui::TextDisabled("X: samples 0..%zu (t = 0..%.6g). Hover for exact values.", r.samples.size() - 1,
-                        last.elapsed);
+    ImGui::TextDisabled("X: samples 0..%zu (t = 0..%.6g)", r.samples.size() - 1, last.elapsed);
     auto plot = [&](const char *id, const char *title, double BehaviorSample::*metric) {
         auto range = std::minmax_element(r.samples.begin(), r.samples.end(),
                                          [&](const auto &a, const auto &b) { return a.*metric < b.*metric; });
@@ -166,6 +156,9 @@ void StudyPanel::draw_study_results(float dpi) {
         for (const auto &s : r.samples)
             values.push_back(float((s.*metric - low) / (high - low)));
         ImGui::TextWrapped("%s", title);
+        if (metric == &BehaviorSample::relative_rms && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Aligned RMS difference as a percentage of the starting field's RMS.\n"
+                              "Alignment uses one integer-cell translation of the whole field.");
         ImGui::Text("Start %.6g%% -> final %.6g%%; peak %.6g%%", 100 * (r.samples.front().*metric),
                     100 * (last.*metric), 100 * maximum);
         char scale[96];
@@ -188,13 +181,13 @@ void StudyPanel::draw_study_results(float dpi) {
     plot("##activity", "Mean activity", &BehaviorSample::mean);
     plot("##coverage", "Fraction above activity threshold", &BehaviorSample::active_fraction);
     ImGui::Text("Threshold %.6g; final aligned RMS %.6g", r.options.activity_threshold, last.aligned_rms);
-    if (last.shift_valid)
+    if (last.shift_valid) {
         ImGui::Text("Final shift from start: (%d, %d, %d) cells", last.dx, last.dy, last.dz);
-    else
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip(
+                "Whole-field translation, modulo the grid; individual organisms are not tracked.");
+    } else
         ImGui::TextWrapped("Final shift is undefined or ambiguous (flat field or tied correlation peaks).");
-    ImGui::TextWrapped("Shift is modulo the grid, for the whole field. Low mismatch is a sampled return, not "
-                       "proof of periodicity or stability. Integer-cell alignment can itself produce "
-                       "oscillations as a shape moves between cells. No individual organism is tracked.");
     if (ImGui::CollapsingHeader("Connected components and periodic loops")) {
         draw_shape_summary(last.morphology, r.config, r.options.activity_threshold);
         if (last.morphology) {

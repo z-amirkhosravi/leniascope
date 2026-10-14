@@ -286,8 +286,8 @@ void GalleryPanel::draw(Runner &runner, const std::array<ViewSettings, 2> &views
         ImGui::Checkbox("Reference (your assessment)", &reference);
         ImGui::SetNextItemWidth(160 * dpi);
         ImGui::InputDouble("Observed simulation time", &observed_time, 0, 0, "%.4f");
-        ImGui::TextWrapped("Zero means unrecorded. This is your observation duration, not the field's age. "
-                           "Labels are not verified automatically.");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Your observation duration, not the field's age. Zero means unrecorded.");
         ImGui::BeginDisabled(title[0] == '\0' || (!captured && editing_id.empty()));
         if (ImGui::Button(editing_id.empty() ? "Save entry" : "Save notes"))
             save();
@@ -323,8 +323,7 @@ void GalleryPanel::draw(Runner &runner, const std::array<ViewSettings, 2> &views
         }
         ImGui::EndDisabled();
         if (catalog.entries.empty())
-            ImGui::TextWrapped("Capture a field you want to keep. To import a checkpoint, load it in the "
-                               "laboratory, then add it here.");
+            ImGui::TextDisabled("No saved patterns.");
         for (const auto &error : catalog.errors)
             ImGui::TextWrapped("Skipped: %s", error.c_str());
         ImGui::EndChild();

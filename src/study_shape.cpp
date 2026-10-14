@@ -51,11 +51,11 @@ void StudyPanel::draw_shape_summary(const std::optional<Morphology> &shape, cons
                     100. * m.largest_cells / m.active_cells);
     ImGui::Text("Components with periodic loops: %llu",
                 static_cast<unsigned long long>(m.winding_components));
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip(
+            "Closed paths winding around the periodic domain, not a count of handles or genus.");
     ImGui::Text("Loop directions: %s", winding_axes_text(m.winding_axes).c_str());
-    ImGui::TextWrapped("Connectivity: %d face neighbors per cell. A periodic loop returns to the same "
-                       "cell after going around the domain. An isolated blob crossing an edge does not "
-                       "count as a periodic loop.",
-                       config.depth > 1 ? 6 : 4);
+    ImGui::Text("Connectivity: %d face neighbors per cell", config.depth > 1 ? 6 : 4);
 }
 void StudyPanel::draw_components(float dpi) {
     auto &m = *shape;
@@ -70,8 +70,9 @@ void StudyPanel::draw_components(float dpi) {
         shape_scalar = false;
     }
     ImGui::Checkbox("Scalar field", &shape_scalar);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("Show all saved values with interpolated color, without component isolation.");
     if (shape_scalar) {
-        ImGui::TextWrapped("All saved values with interpolated color; no component isolation.");
         if (c.depth > 1 && v.view != 0)
             ImGui::Text("Display threshold: %.6g", m.threshold);
     } else if (shape_component) {
@@ -79,8 +80,7 @@ void StudyPanel::draw_components(float dpi) {
         ImGui::TextWrapped("Only ID %u: %u cells (%.4g%%), loops %s", shape_component, part.cells,
                            100. * part.cells / m.shape.active_cells,
                            winding_axes_text(part.winding_axes).c_str());
-    } else
-        ImGui::TextWrapped("Select a row to isolate a component.");
+    }
 
     if (ImGui::BeginTable(
             "Components", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
@@ -111,6 +111,9 @@ void StudyPanel::draw_components(float dpi) {
                     shape_component = id;
                     shape_scalar = false;
                 }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                    ImGui::SetTooltip("Isolate component %u. IDs and colors apply to this measurement only.",
+                                      id);
                 ImGui::TableNextColumn();
                 ImGui::Text("%u", part.cells);
                 ImGui::TableNextColumn();
@@ -121,8 +124,6 @@ void StudyPanel::draw_components(float dpi) {
             }
         ImGui::EndTable();
     }
-    ImGui::TextWrapped("Largest first. IDs/colors belong to this measurement; they can change when you "
-                       "remeasure. One color on opposite sides can be one region across the periodic seam.");
 }
 void StudyPanel::draw_shape(float dpi, bool closing) {
     ImGui::BeginDisabled(busy() || closing || bool(pending_study));

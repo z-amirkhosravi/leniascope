@@ -73,8 +73,6 @@ void StudyPanel::batch_annotation() {
                       });
 }
 void StudyPanel::draw_batch(float dpi, bool closing) {
-    ImGui::TextWrapped("Compare several parameter values at a fixed step horizon. Every run starts afresh; "
-                       "the live simulation and study source are unchanged.");
     ImGui::SetNextItemOpen(batch_settings_open);
     batch_settings_open = ImGui::CollapsingHeader("Batch settings");
     if (batch_settings_open) {
@@ -83,6 +81,11 @@ void StudyPanel::draw_batch(float dpi, bool closing) {
         if (ImGui::Checkbox("Use seed recipe", &batch_plan.reseed))
             batch_plan.repetitions = batch_plan.reseed ? 3 : 1;
         ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(!selected->state.initialization
+                                  ? "This snapshot has no seed recipe."
+                                  : "Regenerate seeds from the recipe for each parameter value.\n"
+                                    "When unchecked, every run starts from the exact saved field.");
         if (batch_plan.reseed) {
             ImGui::TextUnformatted("Seeds per value");
             ImGui::SetNextItemWidth(-1);
@@ -90,12 +93,9 @@ void StudyPanel::draw_batch(float dpi, bool closing) {
             ImGui::TextUnformatted("First seed");
             ImGui::SetNextItemWidth(-1);
             ImGui::InputScalar("##First seed", ImGuiDataType_U64, &batch_plan.first_seed);
-            ImGui::TextWrapped(
-                "Uses consecutive seeds, paired across parameter values. Patch dimensions "
-                "use each run's kernel radius. This regenerates the recipe, not the saved organism.");
-        } else
-            ImGui::TextWrapped("Each run uses the exact saved field. Changing R changes the kernel, "
-                               "without resizing the field or organism.");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("Consecutive seeds, reused across parameter values.");
+        }
         int axis = int(batch_plan.axis);
         ImGui::SetNextItemWidth(-1);
         if (ImGui::Combo("##Vary", &axis,
@@ -159,6 +159,8 @@ void StudyPanel::draw_batch(float dpi, bool closing) {
                 message = e.what();
             }
         }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Compare parameter values in separate runs of the chosen duration.");
         ImGui::EndDisabled();
         ImGui::EndDisabled();
     }
@@ -171,7 +173,8 @@ void StudyPanel::draw_batch(float dpi, bool closing) {
             {-1, 0});
         if (ImGui::Button("Stop batch (keep results)"))
             stop_study();
-        ImGui::TextWrapped("Stopping waits for the current step, measurement or checkpoint write.");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Finish the current step, measurement or save, then keep the results.");
     }
 }
 void StudyPanel::draw_batch_results(float dpi, bool closing) {
@@ -252,11 +255,13 @@ void StudyPanel::draw_batch_results(float dpi, bool closing) {
                                report.options.activity_threshold);
         if (ImGui::Button("Load initial field"))
             batch_field(false);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Load paused into Simulation and use as the Reset starting field.");
         ImGui::SameLine();
         if (ImGui::Button("Load final field"))
             batch_field(true);
-        ImGui::TextWrapped("Loads paused and becomes the Reset starting field. You can evolve it and save "
-                           "interesting outcomes as gallery entries.");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Load paused into Simulation and use as the Reset starting field.");
         ImGui::BeginDisabled(!writable);
         ImGui::InputTextWithHint("##outcome-label", "Your label: tubes, spheres, transient, unknown...",
                                  batch_label, sizeof batch_label);

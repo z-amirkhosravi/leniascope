@@ -7,9 +7,12 @@
 
 namespace lenia {
 enum class Rule : uint32_t {
-    Classic,
-    SmoothReaction
+    Classic = 0,
+    SmoothReaction = 1, // Legacy birth/death model; keep the saved rule ID and dynamics.
+    SmoothClip = 2
 };
+const char *rule_name(Rule);
+double default_sharpness(Rule);
 struct Config {
     int width = 128, height = 128, depth = 128, radius = 26;
     double mu = .15, sigma = .017, dt = .1, smoothness = 12;

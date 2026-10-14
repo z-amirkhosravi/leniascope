@@ -59,7 +59,7 @@ The setup script downloads NVIDIA's pinned CUDA 12.9.1 compiler, cuFFT, runtime 
 
 The CUDA build offers **CPU reference**, **DirectCompute**, and **CUDA / cuFFT** in the compute selector. The choice is remembered; `--cuda` overrides it at startup. Existing workspaces continue using their selected CPU/DirectCompute backend. If CUDA solver or display initialization fails, startup reports the failure and tries DirectCompute, then CPU. Switching backends preserves paused fields subject to the selected solver's precision. CUDA uses float32, so long trajectories need not match either other backend.
 
-The CUDA CLI accepts `--backend cuda`. `x64/CudaBench/CudaBench.exe --tests-only` checks CPU/DirectCompute agreement, both rules, rectangular and non-cubic grids, kernel edits, exact checkpoint continuation, display statistics, immutable frames, concurrent rendering and backend transitions. `--benchmark-only` writes CSV to stdout; initialization and diagnostics go to stderr. `python tools/test_cli.py x64/Cuda/Release/LeniascopeCli.exe --cuda` and `python tools/test_workspace.py x64/Cuda/Release/Leniascope.exe x64/Cuda/Release/LeniascopeCli.exe --cuda` exercise CUDA checkpoint/recovery paths end to end.
+The CUDA CLI accepts `--backend cuda`. `x64/CudaBench/CudaBench.exe --tests-only` checks CPU/DirectCompute agreement, all three rules, rectangular and non-cubic grids, kernel edits, exact checkpoint continuation, display statistics, immutable frames, concurrent rendering and backend transitions. `--benchmark-only` writes CSV to stdout; initialization and diagnostics go to stderr. `python tools/test_cli.py x64/Cuda/Release/LeniascopeCli.exe --cuda` and `python tools/test_workspace.py x64/Cuda/Release/Leniascope.exe x64/Cuda/Release/LeniascopeCli.exe --cuda` exercise CUDA checkpoint/recovery paths end to end.
 
 Windows CMake 3.21+ also supports `-DLENIA_ENABLE_CUDA=ON` with a CUDA 12.8+ toolkit and a compatible host compiler. This was verified with Ninja, CUDA 12.9.1 and MSVC v142. Point `CMAKE_CUDA_COMPILER` at `nvcc.exe` and `CUDAToolkit_ROOT` at the toolkit directory when it is not installed globally. For a WSL checkout, run Ninja/CMake under a temporary drive mapping (`pushd` from a Windows command prompt) because generated link commands cannot use a UNC working directory. The supplied PowerShell/MSBuild script handles the WSL checkout directly.
 
@@ -316,7 +316,33 @@ Sweep filenames receive `.run-N` suffixes. A seed identifies the initialization 
 
 `converge` uses CPU double for every run, starting from the exact same checkpoint without modifying it. The simulated duration is the saved timestep times `--steps`; finer runs take correspondingly more steps. CSV rows report timestep, step count, duration, mean activity, and pointwise RMS/maximum differences from the finest run. The finest row therefore has zero residual **by definition**, not zero numerical error. Repeat with finer levels and appropriate durations, particularly for clipping events or sensitive patterns. GPU checkpoints are usable starting fields, but their stored float32 values do not gain precision by promotion to double. This command refines time only; spatial refinement needs a consistently sampled physical field and scaled kernel radius.
 
-The explicitly experimental **Smooth reaction** rule implements the C-infinity bounded reaction law
+**Smooth clipping** retains the classic growth function and replaces only the clipping operation:
+
+```text
+g(u) = 2 exp(-0.5 ((u-mu)/sigma)^2) - 1
+C_k(x) = (softplus(k*x) - softplus(k*(x-1))) / k
+a_next = C_k(a + dt*g(K*a))
+```
+
+Here `softplus(x) = log(1 + exp(x))` and `k` is Sharpness. The approximation is C-infinity, maps into
+(0,1) in exact arithmetic, and has uniform error at most `log(2)/k` relative to `clip(x,0,1)`.
+Finite precision can round the result to 0 or 1. Stable evaluation avoids exponential overflow and
+cancellation near the upper boundary. Increasing sharpness recovers the classic discrete update;
+growth well inside the bounds is preserved up to the smoothing error. The logarithmic slider spans
+1–10000 and starts at 1000 when this rule is selected. At 1000 the maximum one-step clipping error is
+about 0.000693. Low sharpness deliberately gives a very broad approximation, including a drift toward
+the middle even at zero growth. The preview plots the actual change per step at the chosen cell value.
+Use `--rule smooth-clip --sharpness 1000` in the CLI.
+
+This is a smooth **discrete update**, not an established smooth continuous-time Lenia equation.
+At fixed finite `k`, `C_k(a)` is generally not `a`, so taking `dt` to zero alone does not give the
+intended differential equation. The joint smoothing/timestep limit must be specified and studied
+separately. The one-step approximation bound is not a claim of close long-term trajectories or Orbium
+survival. The `converge` command keeps sharpness fixed, so for this rule its timestep comparisons are
+discrete experiment diagnostics, not evidence of convergence to the classic differential equation.
+
+**Birth/death (legacy)** is the former “Smooth reaction” model. It remains available to reproduce
+existing saved experiments, with its original rule ID 1 and unchanged C-infinity reaction law:
 
 ```text
 g(u) = 2 exp(-0.5 ((u-mu)/sigma)^2) - 1
@@ -325,13 +351,13 @@ d(u) = softplus(-sharpness*g(u)) / sharpness
 da/dt = b(K*a) (1-a) - d(K*a) a
 ```
 
-It uses exponential Euler with the neighborhood frozen during each step, preserving [0,1]. This is a different model with no hard clipping; empty regions can nucleate. It is not claimed to converge to classic Lenia as sharpness grows. The paper [Existence of Life in Lenia](https://arxiv.org/abs/2203.14390) provides a starting point for research on the original nonsmooth flow. GPU volume rendering follows the usual [ray-marching and transfer-function approach](https://developer.nvidia.com/gpugems/gpugems3/part-v-physics-simulation/chapter-30-real-time-simulation-and-rendering-3d-fluids).
+It uses exponential Euler with the neighborhood frozen during each step, preserving [0,1]. This is a different model with no hard clipping; empty regions can nucleate. It does not converge to classic Lenia as sharpness grows. CLI `--rule birth-death` selects it; the old `--rule smooth` spelling retains that meaning and prints a clarification. New smooth-clipping fields use rule ID 2. Existing gallery entries/checkpoints are not rewritten or silently converted, and older binaries reject the new rule ID. The paper [Existence of Life in Lenia](https://arxiv.org/abs/2203.14390) provides a starting point for research on the original nonsmooth flow. GPU volume rendering follows the usual [ray-marching and transfer-function approach](https://developer.nvidia.com/gpugems/gpugems3/part-v-physics-simulation/chapter-30-real-time-simulation-and-rendering-3d-fluids).
 
 ## Verification and performance
 
-`CoreTests` checks independent direct convolution on square, rectangular, and non-cubic grids; seeded repeatability; kernel normalization; 3D checkpoint round trips/replacement; invalid input; torus shift recovery; smooth-rule bounds and small-step consistency; CPU/GPU agreement; and worker lifecycle/state ownership. The baseline target additionally verifies five-step agreement with the original solver on square and cubic grids. `--cpu-only` skips hardware-dependent tests. `tests/RenderTests.vcxproj` checks slices, volumes, surfaces, cutaways, sampling-opacity consistency, rectangular resizing, and every palette. `Leniascope.exe --smoke` saves the application's own rendered interface and viewport in its working directory and exits; `tools/convert-preview.py` converts these BMPs to PNG without external packages.
+`CoreTests` checks independent direct convolution on square, rectangular, and non-cubic grids; seeded repeatability; kernel normalization; 3D checkpoint round trips/replacement; invalid input; torus shift recovery; smooth-clipping bounds, analytic corners, interior growth and convergence to classic; legacy reaction small-step consistency; CPU/GPU agreement; and worker lifecycle/state ownership. The baseline target additionally verifies five-step agreement with the original solver on square and cubic grids. `--cpu-only` skips hardware-dependent tests. `tests/RenderTests.vcxproj` checks slices, volumes, surfaces, cutaways, sampling-opacity consistency, rectangular resizing, and every palette. `Leniascope.exe --smoke` saves the application's own rendered interface and viewport in its working directory and exits; `tools/convert-preview.py` converts these BMPs to PNG without external packages.
 
-The extended tests cover corrupt/interrupted recovery, write failures, preference validation, two-window locking on Windows, command ordering after failures, both restored sessions, and the animation publication cadence. Numerical checks refine time and 16/32/64-cell spatial grids for the same smooth periodic field with a fixed physical kernel radius, in both dimensions and both rules. They also run 500-step boundedness checks and report CPU/GPU drift. On one local seeded 2D classic case, RMS drift rose from about `1.7e-6` at step 100 to `3.8e-4` at step 500; this illustrates why short-step agreement does not imply identical long trajectories.
+The extended tests cover corrupt/interrupted recovery, write failures, preference validation, two-window locking on Windows, command ordering after failures, both restored sessions, and the animation publication cadence. Numerical checks refine time and 16/32/64-cell spatial grids for the same smooth periodic field with a fixed physical kernel radius, in both dimensions for classic and legacy birth/death rules. All three rules receive 500-step boundedness checks and report CPU/GPU drift. On one local seeded 2D classic case, RMS drift rose from about `1.7e-6` at step 100 to `3.8e-4` at step 500; this illustrates why short-step agreement does not imply identical long trajectories.
 
 `tools/test_cli.py <CLI executable>` checks command-line experiments and timestep studies end to end and runs in Windows CI. `tools/test_workspace.py <GUI executable> <CLI executable>` opens and closes the actual GUI twice with an isolated temporary workspace, verifying both paused fields and view settings survive exactly. It requires a local graphics adapter. Ordinary `--smoke` does not access personal workspace files; adding `--workspace <directory>` exercises persistence and the normal close path in that directory.
 
@@ -350,7 +376,7 @@ The gallery stores actual fields with previews, model parameters, provenance and
 
 The first 2D field editor now provides paused selection, copy, rotation, placement, shaped random patches, undo and saved construction history. Constructed pairs can be compared at controlled separations and orientations while retaining their original gallery entries. Revolving a 2D pattern around a chosen movement axis into a 3D field is a later extension: its axis, interpolation, spatial scale and 3D model parameters need explicit choices. That construction supplies an initial condition, without assuming the 2D dynamics or organism will survive in 3D.
 
-Orbium work should distinguish **existence**, **stability**, and **accessibility from a particular seeding distribution**. Failure to find an organism by random seeding does not settle the first two. Compare classic and smooth models from the same saved organisms, measure motion and recurrence, and track the activity of expanding fronts. The current Smooth reaction is a different birth/death law, not a controlled approximation to classic clipping; a controlled smoothing experiment needs a separately defined family and convergence checks. Likewise, carrying the same radial kernel profile into 3D changes the weight of spherical shells. Kernel geometry and discretization should be explicit experimental variables. Published 3D Lenia organisms already exist; any novelty claim needs a precise definition and literature comparison, for example with Chan's [higher-dimensional study](https://arxiv.org/abs/2005.03742).
+Orbium work should distinguish **existence**, **stability**, and **accessibility from a particular seeding distribution**. Failure to find an organism by random seeding does not settle the first two. Compare classic and smooth models from the same saved organisms, measure motion and recurrence, and track the activity of expanding fronts. Smooth clipping provides a controlled approximation of the classic discrete update. The legacy birth/death model changes interior dynamics as well, so its failure to produce Orbiums cannot isolate the role of clipping. Continuous-time analysis still requires a joint smoothing/timestep limit. Likewise, carrying the same radial kernel profile into 3D changes the weight of spherical shells. Kernel geometry and discretization should be explicit experimental variables. Published 3D Lenia organisms already exist; any novelty claim needs a precise definition and literature comparison, for example with Chan's [higher-dimensional study](https://arxiv.org/abs/2005.03742).
 
 For initial-condition statistics, begin with controlled **two-patch experiments**: sweep periodic separation relative to kernel radius, orientation, size, value distribution and shape. Record actual starting fields and repeated seeds. Classify outcomes at a stated observation horizon, retaining mixed, transient and unknown cases alongside descriptive labels such as spheres, tubes and extinction. Connected components must respect periodic boundaries. The measured outcome frequencies belong to that particular distribution and model, not to state space in general. Changes in grid extent and changes in spatial resolution require separate controls.
 

@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
                    "R)\n"
                    "    [--angle 0] [--elevation 0] (pair direction, degrees; pair defaults to 2 patches)\n"
                    "    [--steps 100] [--dt 0.1] [--mu 0.15] [--sigma 0.017]\n"
-                   "    [--backend cpu|gpu|cuda] [--rule classic|smooth] [--sharpness 12]\n"
+                   "    [--backend cpu|gpu|cuda] [--rule classic|smooth-clip|birth-death] [--sharpness K]\n"
                    "    [--input checkpoint.lenia] [--output checkpoint.lenia]\n"
                    "    [--csv metrics.csv] [--sample-every 10] [--checkpoint-every 0]\n"
                    "    [--sweep-mu 0.13,0.14,0.15]\n"
@@ -293,12 +293,22 @@ int main(int argc, char **argv) {
             c.sigma = number("--sigma", ".017");
         if (options.count("--dt"))
             c.dt = number("--dt", ".1");
+        if (options.count("--rule")) {
+            const std::string rule = options.at("--rule");
+            if (rule != "classic" && rule != "smooth-clip" && rule != "birth-death" && rule != "smooth")
+                throw std::invalid_argument("Unknown rule");
+            const Rule chosen = rule == "classic"       ? Rule::Classic
+                                : rule == "smooth-clip" ? Rule::SmoothClip
+                                                        : Rule::SmoothReaction;
+            if (chosen != c.rule)
+                c.smoothness = default_sharpness(chosen);
+            c.rule = chosen;
+            if (rule == "smooth")
+                std::cerr << "--rule smooth retains the legacy birth/death model. Use smooth-clip for "
+                             "smoothed classic Lenia.\n";
+        }
         if (options.count("--sharpness"))
             c.smoothness = number("--sharpness", "12");
-        std::string rule = get("--rule", c.rule == Rule::Classic ? "classic" : "smooth");
-        if (rule != "classic" && rule != "smooth")
-            throw std::invalid_argument("Unknown rule");
-        c.rule = rule == "classic" ? Rule::Classic : Rule::SmoothReaction;
         std::string backend = get("--backend", "cpu");
         if (backend != "cpu" && backend != "gpu" && backend != "cuda")
             throw std::invalid_argument("Unknown backend");

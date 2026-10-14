@@ -65,6 +65,19 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
     comparison = run('compare', arg_path(two), arg_path(full))
     assert float(comparison.splitlines()[1].split(',')[-1]) < 1e-14
 
+    # Smooth clipping has a distinct saved rule ID; old 'smooth' runs stay birth/death.
+    for rule, rule_id, sharpness in [('smooth-clip', 2, 1000.), ('birth-death', 1, 12.), ('smooth', 1, 12.)]:
+        start, resumed, direct = (root / f'{rule}-{suffix}.lenia' for suffix in ('start', 'resumed', 'direct'))
+        run('run', '--input', arg_path(state), '--rule', rule, '--steps', 0, '--output', arg_path(start))
+        saved = start.read_bytes()
+        assert struct.unpack_from('<dI', saved, 48) == (sharpness, rule_id)
+        run('run', '--input', arg_path(start), '--steps', 2, '--output', arg_path(resumed))
+        run('run', '--input', arg_path(state), '--rule', rule, '--steps', 2, '--output', arg_path(direct))
+        assert resumed.read_bytes() == direct.read_bytes(), 'CLI silently changed a loaded model'
+    run('run', '--input', arg_path(state), '--rule', 'smooth-clip', '--sharpness', 10000, '--steps', 2)
+    run('run', '--input', arg_path(state), '--rule', 'smooth-clip', '--sharpness', 10001, '--steps', 0, succeeds=False)
+    print('PASS smooth clipping and legacy CLI rule identity, defaults and continuation')
+
     csv_path = root / 'sweep.csv'
     run('run', '--input', arg_path(state), '--steps', 4, '--sample-every', 2,
         '--sweep-mu', '0.14,0.15', '--csv', arg_path(csv_path))

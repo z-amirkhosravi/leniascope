@@ -369,8 +369,7 @@ void GalleryPanel::draw(Runner &runner, const std::array<ViewSettings, 2> &views
             ImGui::TextWrapped("%s", e.annotation.notes.c_str());
             ImGui::Separator();
             ImGui::Text("%d x %d x %d   R = %d", c.width, c.height, c.depth, c.radius);
-            ImGui::Text("%s   mu %.6g   sigma %.6g", c.rule == Rule::Classic ? "Classic" : "Smooth reaction",
-                        c.mu, c.sigma);
+            ImGui::Text("%s   mu %.6g   sigma %.6g", rule_name(c.rule), c.mu, c.sigma);
             ImGui::Text("dt %.6g   sharpness %.6g", c.dt, c.smoothness);
             ImGui::Text("Step %llu   t = %.6g", static_cast<unsigned long long>(s.steps), s.time);
             ImGui::Text("Mean %.6g   range %.6g - %.6g", e.measures.mean, e.measures.minimum,

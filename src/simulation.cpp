@@ -62,6 +62,20 @@ template <class T> void read(std::istream &f, T &a) {
         throw std::runtime_error("Truncated checkpoint");
 }
 } // namespace
+const char *rule_name(Rule rule) {
+    switch (rule) {
+    case Rule::Classic:
+        return "Classic Lenia";
+    case Rule::SmoothReaction:
+        return "Birth/death (legacy)";
+    case Rule::SmoothClip:
+        return "Smooth clipping";
+    }
+    return "Unknown rule";
+}
+double default_sharpness(Rule rule) {
+    return rule == Rule::SmoothClip ? 1000 : 12;
+}
 size_t Config::count() const {
     return size_t(width) * size_t(height) * size_t(depth);
 }
@@ -77,7 +91,7 @@ void Config::validate() const {
         throw std::invalid_argument("Kernel radius must be between 1 and half the shortest dimension");
     if (!std::isfinite(mu) || mu < 0 || mu > 1 || !std::isfinite(sigma) || sigma <= 0 || sigma > 1 ||
         !std::isfinite(dt) || dt <= 0 || dt > 1 || !std::isfinite(smoothness) || smoothness < 1 ||
-        smoothness > 100 || uint32_t(rule) > 1)
+        smoothness > 10000 || uint32_t(rule) > 2)
         throw std::invalid_argument("Invalid model parameters");
 }
 bool Config::operator==(const Config &c) const {
@@ -246,7 +260,15 @@ double advance_value(double a, double u, const Config &c) {
     double g = 2 * gaussian(u, c.mu, c.sigma) - 1;
     if (c.rule == Rule::Classic)
         return std::clamp(a + c.dt * g, 0., 1.);
-    // Experimental smooth bounded reaction: da/dt=b(u)(1-a)-d(u)a.
+    if (c.rule == Rule::SmoothClip) {
+        // C_k(x) = (softplus(k*x) - softplus(k*(x-1))) / k.
+        // C-infinity, bounded, with uniform clip error <= log(2)/k. Reflect
+        // about 1/2 to avoid subtracting two large softplus values near 1.
+        const double x = a + c.dt * g, y = std::min(x, 1 - x), k = c.smoothness;
+        const double lower = (softplus(k * y) - softplus(k * (y - 1))) / k;
+        return x <= .5 ? lower : 1 - lower;
+    }
+    // Legacy birth/death model: da/dt=b(u)(1-a)-d(u)a. Preserve old saved experiments.
     // Exponential Euler freezes u during this step and preserves [0,1].
     double b = softplus(c.smoothness * g) / c.smoothness, d = softplus(-c.smoothness * g) / c.smoothness;
     double rate = b + d, equilibrium = b / rate;

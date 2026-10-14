@@ -31,7 +31,7 @@ void preview_tests() {
         changed.mu = .23;
         changed.sigma = .04;
         changed.dt = .2;
-        changed.rule = Rule::SmoothReaction;
+        changed.rule = Rule::SmoothClip;
         require(kernel_preview(changed, 8).values == preview.values,
                 "Growth parameters changed the spatial kernel preview");
         changed.radius = 6;
@@ -121,7 +121,8 @@ void model_panel_tests() {
     require(window->Active && same_model_parameters(draft, applied),
             "2D mode did not retain the model window");
     applied = draft = Config{16, 16, 16, 4};
-    draft.rule = Rule::SmoothReaction;
+    draft.rule = Rule::SmoothClip;
+    draft.smoothness = default_sharpness(draft.rule);
     frame();
     click(window->Pos.x + 80, row_y(6));
     require(apply_count == 2, "Smooth rule controls displaced Apply incorrectly");
@@ -141,6 +142,12 @@ void model_panel_tests() {
                });
     };
     const float slider_left = window->Pos.x + style.WindowPadding.x;
+    const float cell_row = window->Pos.y + window->TitleBarHeight + style.WindowPadding.y +
+                           7 * ImGui::GetFrameHeightWithSpacing() +
+                           3 * ImGui::GetTextLineHeightWithSpacing() + 190 + style.ItemSpacing.y;
+    // At the middle cell the response stays within +/-dt even for broad smoothing,
+    // so changing sharpness cannot legitimately move the grey curve by rescaling the axes.
+    click(slider_left + 72.5f, cell_row + ImGui::GetFrameHeight() * .5f);
     click(slider_left + 8, row_y(5));
     const float low_sharpness = float(draft.smoothness);
     const auto soft_curve = curve_vertices(IM_COL32(97, 217, 196, 255));
@@ -155,9 +162,6 @@ void model_panel_tests() {
     applied = draft;
     frame();
     const auto before_cell_change = curve_vertices(IM_COL32(97, 217, 196, 255));
-    const float cell_row = window->Pos.y + window->TitleBarHeight + style.WindowPadding.y +
-                           7 * ImGui::GetFrameHeightWithSpacing() +
-                           3 * ImGui::GetTextLineHeightWithSpacing() + 190 + style.ItemSpacing.y;
     click(slider_left + 8, cell_row + ImGui::GetFrameHeight() * .5f);
     const auto empty_cell_curve = curve_vertices(IM_COL32(97, 217, 196, 255));
     require(!same_curve(before_cell_change, empty_cell_curve),

@@ -37,7 +37,11 @@ __global__ void update(float *field, const float *neighborhood, size_t count, fl
     float g = 2.f * expf(-.5f * q * q) - 1.f;
     if (rule == 0)
         a = fminf(1.f, fmaxf(0.f, a + dt * g));
-    else {
+    else if (rule == 2) {
+        float x = a + dt * g, y = fminf(x, 1.f - x);
+        float lower = (softplus(sharpness * y) - softplus(sharpness * (y - 1.f))) / sharpness;
+        a = x <= .5f ? lower : 1.f - lower;
+    } else {
         float b = softplus(sharpness * g) / sharpness, d = softplus(-sharpness * g) / sharpness;
         float rate = b + d;
         a += (b / rate - a) * (-expm1f(-rate * dt));

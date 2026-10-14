@@ -51,7 +51,9 @@ uint address(uint row,uint i){if(axis==0)return row*W+i;if(axis==1)return (row/W
 [numthreads(256,1,1)] void multiply(uint3 gid:SV_GroupID,uint tid:SV_GroupIndex){uint i=(gid.x+gid.y*65535)*256+tid;if(i<count)data[i]=mul(data[i],kernel[i]);}
 float sp(float x){return max(x,0)+log(1+exp(-abs(x)));}
 [numthreads(256,1,1)] void update(uint3 gid:SV_GroupID,uint tid:SV_GroupIndex){uint i=(gid.x+gid.y*65535)*256+tid;if(i>=count)return;uint3 p=uint3(i%W,(i/W)%H,i/(W*H));float a=field[p],q=(data[i].x/count-mu)/sigma,g=2*exp(-.5*q*q)-1;
- if(rule==0)a=saturate(a+dt*g);else {float b=sp(sharp*g)/sharp,d=sp(-sharp*g)/sharp,rate=b+d;float x=rate*dt;float decay=x<.001?x*(1-.5*x+x*x/6):1-exp(-x);a+=(b/rate-a)*decay;}field[p]=a;}
+ if(rule==0)a=saturate(a+dt*g);
+ else if(rule==2){float x=a+dt*g,y=min(x,1-x);float lower=(sp(sharp*y)-sp(sharp*(y-1)))/sharp;a=x<=.5?lower:1-lower;}
+ else {float b=sp(sharp*g)/sharp,d=sp(-sharp*g)/sharp,rate=b+d;float x=rate*dt;float decay=x<.001?x*(1-.5*x+x*x/6):1-exp(-x);a+=(b/rate-a)*decay;}field[p]=a;}
 [numthreads(256,1,1)] void pack(uint3 gid:SV_GroupID,uint tid:SV_GroupIndex){uint i=(gid.x+gid.y*65535)*256+tid;if(i<count)data[i]=float2(field[uint3(i%W,(i/W)%H,i/(W*H))],0);}
 )";
 struct Params {

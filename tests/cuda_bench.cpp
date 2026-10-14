@@ -97,45 +97,60 @@ void validate_worker() {
                  "sessions and pacing\n";
 }
 void validate() {
-    for (auto config : {Config{16, 8, 1, 3}, Config{8, 4, 16, 2}, Config{32, 32, 32, 6}})
-        for (auto rule : {Rule::Classic, Rule::SmoothReaction}) {
-            config.rule = rule;
-            auto initial = random_state(config, 987, {23, .8, 1.5, .2, .7});
-            CpuSolver cpu(initial);
-            GpuSolver direct(initial);
-            CudaSolver cuda(initial);
-            double cpu_error = 0, direct_error = 0;
-            for (int i = 0; i < 5; ++i) {
+    for (auto dimensions : {Config{16, 8, 1, 3}, Config{8, 4, 16, 2}, Config{32, 32, 32, 6}})
+        for (auto rule : {Rule::Classic, Rule::SmoothReaction, Rule::SmoothClip})
+            for (double sharpness : rule == Rule::SmoothClip ? std::vector<double>{1, 5, 40, 1000, 10000}
+                                                             : std::vector<double>{12}) {
+                auto config = dimensions;
+                config.rule = rule;
+                config.smoothness = sharpness;
+                auto initial = random_state(config, 987, {23, .8, 1.5, .2, .7});
+                CpuSolver cpu(initial);
+                GpuSolver direct(initial);
+                CudaSolver cuda(initial);
+                double cpu_error = 0, direct_error = 0;
+                for (int i = 0; i < 5; ++i) {
+                    cpu.step();
+                    direct.step();
+                    cuda.step();
+                    auto got = cuda.snapshot();
+                    cpu_error = std::max(cpu_error, difference(cpu.snapshot(), got));
+                    direct_error = std::max(direct_error, difference(direct.snapshot(), got));
+                    require(got.steps == unsigned(i + 1) && got.initialization &&
+                                got.initialization->patches == 23,
+                            "CUDA lost state metadata");
+                }
+                require(cpu_error < 1e-5 && direct_error < 1e-5,
+                        "CUDA convolution/update differs from references");
+                std::cerr << "PASS CUDA " << config.width << 'x' << config.height << 'x' << config.depth
+                          << " rule=" << int(rule) << " sharpness=" << sharpness
+                          << " max CPU/DirectCompute error=" << cpu_error << '/' << direct_error << '\n';
+                config.radius = 1;
+                // Isolate rebuilding the kernel from accumulated float/double drift.
+                // A new neighborhood can amplify that drift through the steep growth curve.
+                CpuSolver rebuild_reference(cuda.snapshot());
+                rebuild_reference.parameters(config);
+                cpu.parameters(config);
+                cuda.parameters(config);
+                rebuild_reference.step();
                 cpu.step();
-                direct.step();
                 cuda.step();
-                auto got = cuda.snapshot();
-                cpu_error = std::max(cpu_error, difference(cpu.snapshot(), got));
-                direct_error = std::max(direct_error, difference(direct.snapshot(), got));
-                require(got.steps == unsigned(i + 1) && got.initialization &&
-                            got.initialization->patches == 23,
-                        "CUDA lost state metadata");
+                auto rebuilt = cuda.snapshot();
+                std::cerr << "  kernel edit: same-field error="
+                          << difference(rebuild_reference.snapshot(), rebuilt)
+                          << " accumulated error=" << difference(cpu.snapshot(), rebuilt) << '\n';
+                require(difference(rebuild_reference.snapshot(), rebuilt) < 2e-5,
+                        "CUDA kernel rebuild differs from CPU on the same field");
+                auto saved = cuda.snapshot();
+                CudaSolver resumed(saved);
+                require(resumed.snapshot().values == saved.values, "CUDA checkpoint restart changed field");
+                for (int i = 0; i < 5; ++i) {
+                    cuda.step();
+                    resumed.step();
+                }
+                require(resumed.snapshot().values == cuda.snapshot().values,
+                        "CUDA restart changed continuation");
             }
-            require(cpu_error < 1e-5 && direct_error < 1e-5,
-                    "CUDA convolution/update differs from references");
-            std::cerr << "PASS CUDA " << config.width << 'x' << config.height << 'x' << config.depth
-                      << " rule=" << int(rule) << " max CPU/DirectCompute error=" << cpu_error << '/'
-                      << direct_error << '\n';
-            config.radius = 1;
-            cpu.parameters(config);
-            cuda.parameters(config);
-            cpu.step();
-            cuda.step();
-            require(difference(cpu.snapshot(), cuda.snapshot()) < 2e-5, "CUDA kernel rebuild differs");
-            auto saved = cuda.snapshot();
-            CudaSolver resumed(saved);
-            require(resumed.snapshot().values == saved.values, "CUDA checkpoint restart changed field");
-            for (int i = 0; i < 5; ++i) {
-                cuda.step();
-                resumed.step();
-            }
-            require(resumed.snapshot().values == cuda.snapshot().values, "CUDA restart changed continuation");
-        }
     auto gpu = std::make_shared<GpuContext>();
     for (auto config : {Config{32, 16, 1, 6}, Config{32, 16, 8, 3}}) {
         CudaSolver cuda(random_state(config, 1), gpu);
@@ -160,9 +175,10 @@ void validate() {
         require(reused && reused->metadata.steps == 3, "CUDA display pool did not recover");
         require(read_image(gpu, *reused) == cuda.snapshot().values, "CUDA reused texture is stale");
     }
-    for (auto rule : {Rule::Classic, Rule::SmoothReaction}) {
+    for (auto rule : {Rule::Classic, Rule::SmoothReaction, Rule::SmoothClip}) {
         Config config{32, 32, 32, 6};
         config.rule = rule;
+        config.smoothness = default_sharpness(rule);
         auto initial = random_state(config, 1);
         CudaSolver cuda(initial);
         CpuSolver cpu(initial);
@@ -177,7 +193,7 @@ void validate() {
         }
     }
     validate_worker();
-    std::cerr << "PASS CUDA bounds, rectangular/non-cubic convolution, both rules, kernel edits, exact "
+    std::cerr << "PASS CUDA bounds, rectangular/non-cubic convolution, all rules, kernel edits, exact "
                  "restart, GPU display copies/statistics and bounded immutable leases\n";
 }
 struct Samples {

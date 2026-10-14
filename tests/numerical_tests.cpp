@@ -15,6 +15,7 @@ State periodic_field(int size, bool volume, Rule rule) {
     c.sigma = .03;
     c.dt = .01;
     c.rule = rule;
+    c.smoothness = default_sharpness(rule);
     State state{c, std::vector<double>(c.count()), 0};
     const double tau = 2 * std::acos(-1.);
     for (int z = 0; z < c.depth; ++z)
@@ -52,23 +53,26 @@ void bounded(const State &s) {
 } // namespace
 void numerical_tests(bool cpu_only) {
     for (bool volume : {false, true}) {
-        for (Rule rule : {Rule::Classic, Rule::SmoothReaction}) {
+        for (Rule rule : {Rule::Classic, Rule::SmoothReaction, Rule::SmoothClip}) {
             auto initial = periodic_field(16, volume, rule);
-            auto report = timestep_study(initial, 20, 4);
-            check(report[0].rms_to_finest > report[1].rms_to_finest * 1.4 &&
-                      report[1].rms_to_finest > report[2].rms_to_finest * 1.4 &&
-                      report[2].rms_to_finest > 0 && report[3].rms_to_finest == 0,
-                  "Time refinement failed on a smooth periodic field");
-            auto coarse = evolved(periodic_field(16, volume, rule), 4);
-            auto medium = evolved(periodic_field(32, volume, rule), 4);
-            auto fine = evolved(periodic_field(64, volume, rule), 4);
-            double coarse_error = aligned_error(coarse, fine), medium_error = aligned_error(medium, fine);
-            check(medium_error < coarse_error * .75 && medium_error > 0,
-                  "Spatial refinement failed with physical kernel radius held fixed");
-            std::cout << "PASS refinement " << (volume ? "3D" : "2D") << " rule=" << unsigned(rule)
-                      << " dt errors=" << report[0].rms_to_finest << '/' << report[1].rms_to_finest << '/'
-                      << report[2].rms_to_finest << " grid errors=" << coarse_error << '/' << medium_error
-                      << '\n';
+            // Fixed-sharpness smooth clipping is not an ODE time discretization.
+            if (rule != Rule::SmoothClip) {
+                auto report = timestep_study(initial, 20, 4);
+                check(report[0].rms_to_finest > report[1].rms_to_finest * 1.4 &&
+                          report[1].rms_to_finest > report[2].rms_to_finest * 1.4 &&
+                          report[2].rms_to_finest > 0 && report[3].rms_to_finest == 0,
+                      "Time refinement failed on a smooth periodic field");
+                auto coarse = evolved(periodic_field(16, volume, rule), 4);
+                auto medium = evolved(periodic_field(32, volume, rule), 4);
+                auto fine = evolved(periodic_field(64, volume, rule), 4);
+                double coarse_error = aligned_error(coarse, fine), medium_error = aligned_error(medium, fine);
+                check(medium_error < coarse_error * .75 && medium_error > 0,
+                      "Spatial refinement failed with physical kernel radius held fixed");
+                std::cout << "PASS refinement " << (volume ? "3D" : "2D") << " rule=" << unsigned(rule)
+                          << " dt errors=" << report[0].rms_to_finest << '/' << report[1].rms_to_finest << '/'
+                          << report[2].rms_to_finest << " grid errors=" << coarse_error << '/' << medium_error
+                          << '\n';
+            }
             auto cfg = initial.config;
             cfg.dt = .025;
             auto seed = random_state(cfg, 42);

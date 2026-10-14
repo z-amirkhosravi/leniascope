@@ -146,6 +146,15 @@ void gallery_tests(bool cpu_only) {
     rejects([&] { save_gallery_entry(blocked, random_state({8, 8, 1, 3}, 1), view, notes, bmp); });
     auto constant = random_state({8, 8, 1, 3}, 1);
     std::fill(constant.values.begin(), constant.values.end(), .1);
+    for (auto rule : {Rule::SmoothReaction, Rule::SmoothClip}) {
+        auto source = constant;
+        source.config.rule = rule;
+        source.config.smoothness = default_sharpness(rule);
+        const auto entry = save_gallery_entry(root, source, view, notes, bmp);
+        check(read_gallery_entry(root, entry.id).state.config == source.config &&
+                  load_gallery_state(root, entry.id).config == source.config,
+              "Gallery changed the smooth or legacy rule");
+    }
     auto uniform = save_gallery_entry(root, constant, view, notes, bmp);
     check(load_gallery_state(root, uniform.id).values == constant.values,
           "Uniform-field mean rounding rejected entry");

@@ -55,7 +55,7 @@ void growth_plot(const Config &draft, const Config &applied, float &cell, float 
     const auto current = response(draft), previous = response(applied);
     const float base = float(std::max(draft.dt, applied.dt));
     float limit = base;
-    // Smooth birth/death rates near empty/full cells can exceed one unit per time.
+    // Strong smoothing or the legacy birth/death rule can change a cell by more than dt.
     // Include both curves in the scale instead of drawing them outside the graph.
     for (const auto *values : {&current, &previous})
         for (const auto &value : *values)
@@ -174,13 +174,23 @@ bool ModelPanel::draw(Config &draft, const Config &applied, float dpi, bool disa
         if (draft.depth > 1)
             max_radius = std::min(max_radius, draft.depth / 2);
         ImGui::SliderInt("Radius", &draft.radius, 1, max_radius, "%d", ImGuiSliderFlags_AlwaysClamp);
-        int rule = int(draft.rule);
-        if (ImGui::Combo("Rule", &rule, "Classic Lenia\0Smooth reaction (experiment)\0"))
-            draft.rule = Rule(rule);
-        if (draft.rule == Rule::SmoothReaction) {
+        if (ImGui::BeginCombo("Rule", rule_name(draft.rule))) {
+            for (Rule rule : {Rule::Classic, Rule::SmoothClip, Rule::SmoothReaction})
+                if (ImGui::Selectable(rule_name(rule), draft.rule == rule) && draft.rule != rule) {
+                    draft.rule = rule;
+                    draft.smoothness = default_sharpness(rule);
+                }
+            ImGui::EndCombo();
+        }
+        if (draft.rule != Rule::Classic) {
             float sharpness = float(draft.smoothness);
-            if (ImGui::SliderFloat("Sharpness", &sharpness, 1, 40, "%.1f", ImGuiSliderFlags_AlwaysClamp))
+            const bool clip = draft.rule == Rule::SmoothClip;
+            if (ImGui::SliderFloat("Sharpness", &sharpness, 1, clip ? 10000.f : 100.f, "%.1f",
+                                   ImGuiSliderFlags_AlwaysClamp | (clip ? ImGuiSliderFlags_Logarithmic : 0)))
                 draft.smoothness = sharpness;
+            if (clip && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("Smooth clip width: %.4g. Higher sharpness approaches classic Lenia.",
+                                  1 / draft.smoothness);
         }
         ImGui::BeginDisabled(same_model_parameters(draft, applied));
         apply = ImGui::Button("Apply", {-1, 0});

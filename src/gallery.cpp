@@ -149,7 +149,7 @@ GalleryEntry read_gallery_entry(const fs::path &root, const std::string &id) {
             "Invalid gallery metadata");
     in >> std::ws;
     require(in.eof(), "Unexpected gallery metadata");
-    require(rule == 0 || rule == 1, "Unknown gallery rule");
+    require(rule >= 0 && rule <= 2, "Unknown gallery rule");
     c.rule = Rule(rule);
     c.validate();
     validate(a);

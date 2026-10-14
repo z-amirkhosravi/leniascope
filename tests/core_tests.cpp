@@ -68,9 +68,71 @@ void compare_convolution(Config c) {
               << '\n';
 }
 void seed_tests();
+void smooth_clip_tests() {
+    Config smooth{16, 16, 1, 3};
+    smooth.rule = Rule::SmoothClip;
+    // Check the actual update, including both clipping corners and overshoots.
+    for (double dt : {1., .1, .001}) {
+        smooth.dt = dt;
+        for (double u : {0., .15, 1.})
+            for (int i = 0; i <= 100; ++i) {
+                const double a = i / 100.;
+                Config classic = smooth;
+                classic.rule = Rule::Classic;
+                const double reference = advance_value(a, u, classic);
+                double previous_error = 1;
+                for (double k : {1., 5., 12., 40., 100., 1000., 10000.}) {
+                    smooth.smoothness = k;
+                    smooth.validate();
+                    const double value = advance_value(a, u, smooth);
+                    const double error = std::abs(value - reference);
+                    require(std::isfinite(value) && value >= 0 && value <= 1,
+                            "Smooth clipping left finite [0,1] bounds");
+                    require(error <= std::log(2.) / k + 1e-14 && error <= previous_error + 1e-14,
+                            "Smooth clipping does not converge uniformly to classic clipping");
+                    previous_error = error;
+                }
+            }
+    }
+    smooth.dt = .1;
+    // At a=dt and g=-1, the unclipped proposal is exactly zero.
+    for (double k : {1., 5., 40., 1000., 10000.}) {
+        smooth.smoothness = k;
+        const double corner = (std::log(2.) - std::log1p(std::exp(-k))) / k;
+        require(std::abs(advance_value(.1, 1, smooth) - corner) < 1e-14 &&
+                    std::abs(advance_value(.9, smooth.mu, smooth) - (1 - corner)) < 1e-14,
+                "Smooth clip corners differ from the analytic approximation");
+        const double h = 1e-7;
+        const double left = (advance_value(.1, 1, smooth) - advance_value(.1 - h, 1, smooth)) / h;
+        const double right = (advance_value(.1 + h, 1, smooth) - advance_value(.1, 1, smooth)) / h;
+        require(std::abs(left - right) < k * h, "Smooth clip retained the classic derivative jump at zero");
+    }
+    smooth.smoothness = 1000;
+    require(std::abs(advance_value(.25, 1, smooth) - .15) < 1e-14 &&
+                std::abs(advance_value(.25, smooth.mu, smooth) - .35) < 1e-14,
+            "Smooth clipping rescaled interior birth or death");
+    // Model IDs must not reinterpret an existing birth/death checkpoint.
+    for (auto rule : {Rule::SmoothReaction, Rule::SmoothClip}) {
+        auto c = smooth;
+        c.rule = rule;
+        c.smoothness = default_sharpness(rule);
+        const auto source = random_state(c, 123);
+        save_state(source, "test-rule.lenia");
+        const auto loaded = load_state("test-rule.lenia");
+        std::remove("test-rule.lenia");
+        require(loaded.config == source.config && loaded.values == source.values,
+                "Saved rule or sharpness changed on load");
+        CpuSolver first(source), resumed(loaded);
+        first.step();
+        resumed.step();
+        require(first.snapshot().values == resumed.snapshot().values, "Saved rule changed continuation");
+    }
+    std::cout << "PASS smooth clip bounds, analytic corners, interior growth, convergence and saved rules\n";
+}
 int main(int argc, char **argv) {
     try {
         bool cpu_only = argc > 1 && std::string(argv[1]) == "--cpu-only";
+        smooth_clip_tests();
         seed_tests();
         workspace_tests();
         gallery_tests(cpu_only);

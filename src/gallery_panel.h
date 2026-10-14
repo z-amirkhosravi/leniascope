@@ -39,6 +39,9 @@ class GalleryPanel {
     struct ShapeMeasurement {
         Morphology shape;
         double threshold = .01;
+        std::vector<ShapeComponent> components;
+        std::vector<uint32_t> order; // IDs, largest first; colors use IDs rather than display rank.
+        std::unique_ptr<Renderer> renderer;
     };
     struct Result {
         GalleryCatalog catalog;
@@ -103,7 +106,11 @@ class GalleryPanel {
     std::atomic<int> batch_progress{0};
     double shape_threshold = .01;
     std::optional<ShapeMeasurement> shape;
+    ViewSettings shape_view;
+    uint32_t shape_component = 0;
+    bool shape_scalar = false;
     void begin_shape();
+    void draw_components(float dpi);
     void draw_shape(float dpi, bool closing);
     static void draw_shape_summary(const std::optional<Morphology> &, const Config &, double threshold);
     void begin_batch();

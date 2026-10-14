@@ -423,7 +423,16 @@ void GalleryPanel::tick(Runner &runner, std::array<ViewSettings, 2> &views) {
             if (completed == Job::Save)
                 shape.reset();
             if (result.shape) {
-                shape = result.shape;
+                if (!shape) {
+                    shape_view = selected->view;
+                    shape_view.view = selected->state.config.depth > 1 ? 1 : 0;
+                    if (selected->state.config.depth == 1)
+                        shape_view.axis = 2;
+                    shape_view.clip = 1;
+                }
+                shape = std::move(result.shape);
+                shape_component = 0;
+                shape_scalar = false;
                 message = "Measured saved field; no evolution was run.";
             }
             if ((completed == Job::Select || completed == Job::Save) && selected) {
@@ -857,6 +866,14 @@ bool GalleryPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &view
             morphology_csv(shape->shape) !=
                 morphology_csv(studies.entries[0].report.samples.front().morphology))
             throw std::runtime_error("Saved shape measurements disagree with the initial study sample");
+        if (shape->components.size() != shape->shape.components || !shape->renderer)
+            throw std::runtime_error("Shape component preview is incomplete");
+        shape->renderer->draw_components(shape_view, 320, 240);
+        shape->renderer->export_bmp((root.parent_path() / "shape-components.bmp").u8string());
+        if (!shape->order.empty()) {
+            shape->renderer->draw_components(shape_view, 320, 240, shape->order.front());
+            shape->renderer->export_bmp((root.parent_path() / "shape-largest.bmp").u8string());
+        }
         ++smoke_phase;
         return true;
     default:

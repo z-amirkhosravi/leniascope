@@ -7,8 +7,9 @@
 namespace lenia {
 namespace {
 const char *source = R"(
-cbuffer View : register(b0){float4 dims;float4 camera;float4 right;float4 up;float4 forward;float4 settings;float4 controls;float4 offset;};
+cbuffer View : register(b0){float4 dims;float4 camera;float4 right;float4 up;float4 forward;float4 settings;float4 controls;float4 offset;uint4 selection;};
 Texture3D<float> field:register(t0);Texture1D<float4> palette:register(t1);SamplerState sampling:register(s0);SamplerState paletteSampling:register(s1);
+Texture3D<uint> labels:register(t2);
 struct VOut{float4 position:SV_POSITION;float2 uv:TEXCOORD;};
 VOut vs(uint id:SV_VertexID){VOut v;v.uv=float2((id<<1)&2,id&2);v.position=float4(v.uv*float2(2,-2)+float2(-1,1),0,1);return v;}
 float sample_at(float3 p){return field.SampleLevel(sampling,frac(p+offset.xyz),0);}
@@ -42,9 +43,56 @@ float4 ps(VOut input):SV_TARGET{
  }
  return float4(accumulated+(1-alpha)*background,1);
 }
+float3 component_color(uint id){
+ uint h=id*747796405u+2891336453u;
+ h=((h>>((h>>28)+4))^h)*277803737u;h=(h>>22)^h;
+ return .35+.65*float3(h&255,(h>>8)&255,(h>>16)&255)/255;
+}
+uint label_at(int3 cell){
+ int3 size=int3(dims.xyz);return labels.Load(int4((cell%size+size)%size,0));
+}
+bool visible(uint id){return id!=0&&(selection.x==0||selection.x==id);}
+float4 components_ps(VOut input):SV_TARGET{
+ float3 background=float3(.035,.048,.063);float2 uv=input.uv;
+ if(controls.x==0||dims.z==1){
+   float2 sizes=dims.z==1?dims.xy:(controls.y==0?dims.yz:(controls.y==1?dims.xz:dims.xy));
+   float2 p=(uv-.5)*float2(right.w/(sizes.x/sizes.y),1)/controls.w;
+   if(any(abs(p)>.5))return float4(background,1);p+=.5;
+   float3 q=controls.y==0?float3(controls.z,p):(controls.y==1?float3(p.x,controls.z,p.y):float3(p,controls.z));
+   if(dims.z==1)q=float3(p,.5);
+   uint id=label_at(int3(floor((q+offset.xyz)*dims.xyz)));
+   return float4(visible(id)?component_color(id):background,1);
+ }
+ float3 extent=dims.xyz/max(dims.x,max(dims.y,dims.z))*.5;
+ float3 ro=camera.xyz,rd=normalize(forward.xyz+(uv.x-.5)*right.w*right.xyz-(uv.y-.5)*up.xyz);
+ float3 low=-extent,high=extent;high.z=lerp(low.z,high.z,settings.w);
+ float3 safe=rd+float3(rd.x==0?1e-20:0,rd.y==0?1e-20:0,rd.z==0?1e-20:0);
+ float3 t0=(low-ro)/safe,t1=(high-ro)/safe,near3=min(t0,t1),far3=max(t0,t1);
+ float begin=max(max(near3.x,near3.y),max(near3.z,0)),end=min(min(far3.x,far3.y),far3.z);
+ if(end<=begin)return float4(background,1);
+ // Traverse every crossed voxel (Amanatides-Woo DDA), including one-cell bridges.
+ // The offset changes the displayed cut through the torus, never the measured labels.
+ float3 origin=(ro/(2*extent)+.5+offset.xyz)*dims.xyz,direction=safe/(2*extent)*dims.xyz;
+ int3 step=int3(sign(direction));
+ int3 cell=int3(floor(origin+direction*(begin+min(1e-6,(end-begin)*.5))));
+ float3 next=(float3(cell)+float3(step>0)-origin)/direction,delta=abs(1/direction);
+ float3 normal=-sign(direction)*float3(near3>=begin);
+ [loop]for(int n=0;n<int(dims.x+dims.y+dims.z)+3;++n){
+   uint id=label_at(cell);
+   if(visible(id)){
+     float light=.5+.5*abs(dot(normalize(normal+1e-7),normalize(float3(.4,.7,1))));
+     return float4(component_color(id)*light,1);
+   }
+   float t=min(next.x,min(next.y,next.z));if(t>=end)break;
+   float3 crossed=float3(next<=t);cell+=step*int3(crossed);next+=delta*crossed;
+   normal=-sign(direction)*crossed;
+ }
+ return float4(background,1);
+}
 )";
 struct Constants {
     float dims[4], camera[4], right[4], up[4], forward[4], settings[4], controls[4], offset[4];
+    uint32_t selection[4];
 };
 } // namespace
 const std::vector<std::string> &Renderer::palette_names() {
@@ -176,7 +224,48 @@ void Renderer::update_palette(int id) {
     context->UpdateSubresource(palette.Get(), 0, nullptr, colors.data(), 0, 0);
     palette_id = id;
 }
+std::array<float, 3> Renderer::component_color(uint32_t id) {
+    uint32_t h = id * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28) + 4)) ^ h) * 277803737u;
+    h = (h >> 22) ^ h;
+    return {.35f + .65f * (h & 255) / 255, .35f + .65f * ((h >> 8) & 255) / 255,
+            .35f + .65f * ((h >> 16) & 255) / 255};
+}
+void Renderer::upload_components(const Config &c, const std::vector<uint32_t> &labels) {
+    c.validate();
+    if (labels.size() != c.count())
+        throw std::invalid_argument("Incomplete component field");
+    auto lock = gpu->lock();
+    if (!component_pixel) {
+        auto shader = compile_shader(source, "components_ps", "ps_5_0");
+        check(device->CreatePixelShader(shader->GetBufferPointer(), shader->GetBufferSize(), nullptr,
+                                        &component_pixel),
+              "Create component shader");
+    }
+    D3D11_TEXTURE3D_DESC d{};
+    d.Width = c.width;
+    d.Height = c.height;
+    d.Depth = c.depth;
+    d.MipLevels = 1;
+    d.Format = DXGI_FORMAT_R32_UINT;
+    d.Usage = D3D11_USAGE_IMMUTABLE;
+    d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data{labels.data(), UINT(c.width * 4), UINT(c.width * c.height * 4)};
+    ComPtr<ID3D11Texture3D> texture;
+    ComPtr<ID3D11ShaderResourceView> view;
+    check(device->CreateTexture3D(&d, &data, &texture), "Create component volume");
+    check(device->CreateShaderResourceView(texture.Get(), nullptr, &view), "Create component volume view");
+    component_view = std::move(view);
+    component_config = c;
+}
 ID3D11ShaderResourceView *Renderer::draw(const ViewSettings &v, int w, int h) {
+    return draw_internal(v, w, h, false, 0);
+}
+ID3D11ShaderResourceView *Renderer::draw_components(const ViewSettings &v, int w, int h, uint32_t isolate) {
+    return draw_internal(v, w, h, true, isolate);
+}
+ID3D11ShaderResourceView *Renderer::draw_internal(const ViewSettings &v, int w, int h, bool components,
+                                                  uint32_t isolate) {
     auto lock = gpu->lock();
     w = std::clamp(w, 1, 4096);
     h = std::clamp(h, 1, 4096);
@@ -205,14 +294,17 @@ ID3D11ShaderResourceView *Renderer::draw(const ViewSettings &v, int w, int h) {
     context->OMSetRenderTargets(1, &rtv, nullptr);
     float clear[] = {.035f, .048f, .063f, 1};
     context->ClearRenderTargetView(target_view.Get(), clear);
-    if (!available)
+    if (components ? !component_view : !available)
         return image.Get();
-    update_palette(v.palette);
+    if (!components)
+        update_palette(v.palette);
     float cp = std::cos(v.pitch), sp = std::sin(v.pitch), cy = std::cos(v.yaw), sy = std::sin(v.yaw);
     Constants cb{};
-    cb.dims[0] = float(config.width);
-    cb.dims[1] = float(config.height);
-    cb.dims[2] = float(config.depth);
+    const auto &c = components ? component_config : config;
+    cb.dims[0] = float(c.width);
+    cb.dims[1] = float(c.height);
+    cb.dims[2] = float(c.depth);
+    cb.selection[0] = isolate;
     cb.camera[0] = sy * cp * v.distance;
     cb.camera[1] = sp * v.distance;
     cb.camera[2] = cy * cp * v.distance;
@@ -243,17 +335,19 @@ ID3D11ShaderResourceView *Renderer::draw(const ViewSettings &v, int w, int h) {
     context->IASetInputLayout(nullptr);
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context->VSSetShader(vertex.Get(), nullptr, 0);
-    context->PSSetShader(pixel.Get(), nullptr, 0);
+    context->PSSetShader(components ? component_pixel.Get() : pixel.Get(), nullptr, 0);
     context->GSSetShader(nullptr, nullptr, 0);
     ID3D11Buffer *b = constants.Get();
     context->PSSetConstantBuffers(0, 1, &b);
-    ID3D11ShaderResourceView *srvs[] = {field_view.Get(), palette_view.Get()};
-    context->PSSetShaderResources(0, 2, srvs);
+    ID3D11ShaderResourceView *srvs[] = {components ? nullptr : field_view.Get(),
+                                        components ? nullptr : palette_view.Get(),
+                                        components ? component_view.Get() : nullptr};
+    context->PSSetShaderResources(0, 3, srvs);
     ID3D11SamplerState *samplers[] = {sampler.Get(), palette_sampler.Get()};
     context->PSSetSamplers(0, 2, samplers);
     context->Draw(3, 0);
-    ID3D11ShaderResourceView *nulls[2] = {};
-    context->PSSetShaderResources(0, 2, nulls);
+    ID3D11ShaderResourceView *nulls[3] = {};
+    context->PSSetShaderResources(0, 3, nulls);
     context->OMSetRenderTargets(0, nullptr, nullptr);
     return image.Get();
 }

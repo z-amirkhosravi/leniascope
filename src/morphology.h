@@ -11,6 +11,17 @@ struct Morphology {
 // Winding requires a closed path with nonzero torus displacement, not merely a seam crossing.
 // Does not mutate the field or assign organism/morphology labels.
 Morphology measure_morphology(const State &, double threshold = .01);
+struct ShapeComponent {
+    uint32_t cells = 0, winding_axes = 0;
+};
+struct ComponentMap {
+    Morphology summary;
+    // Zero means inactive; positive IDs index components[id-1]. IDs are local to this measurement.
+    std::vector<uint32_t> labels;
+    std::vector<ShapeComponent> components;
+};
+// Same traversal and exact double threshold as measure_morphology, retaining cell membership.
+ComponentMap label_components(const State &, double threshold = .01);
 const char *morphology_csv_header();
 // Unmeasured legacy data yields empty columns. Largest share is undefined for an empty mask.
 std::string morphology_csv(const std::optional<Morphology> &);

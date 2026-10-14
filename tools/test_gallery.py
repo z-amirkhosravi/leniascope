@@ -98,6 +98,9 @@ def exercise(root):
                 assert len(a.split()) == len(b.split())
                 assert all(abs(float(x)-float(y)) < 1e-6 for x,y in zip(a.split(), b.split()))
             assert (case / 'ui-smoke.bmp').stat().st_size > 10000
+            for image in ['shape-components.bmp', 'shape-largest.bmp']:
+                bitmap = (profile / image).read_bytes()
+                assert bitmap[:2] == b'BM' and len(bitmap) == 54 + 320*240*4
             print(f'PASS {backend} {active+2}D gallery GUI: capture/reload, behavior study, batch/label/reopen/endpoint load, unchanged live/inactive fields', flush=True)
 
 if args.output_dir:

@@ -1,7 +1,10 @@
+#include "src/morphology.h"
 #include "src/renderer.h"
 #include "src/runner.h"
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <numeric>
 #include <stdexcept>
@@ -33,6 +36,79 @@ std::vector<uint8_t> pixels(ID3D11Device *device, ID3D11DeviceContext *context,
 void require(bool b, const char *message) {
     if (!b)
         throw std::runtime_error(message);
+}
+void component_tests() {
+    auto gpu = std::make_shared<GpuContext>();
+    Renderer renderer(gpu);
+    State state;
+    state.config = {8, 8, 1, 1};
+    state.values.assign(64, 0);
+    state.values[2 * 8] = state.values[2 * 8 + 7] = .5 + 1e-12; // Same float as threshold.
+    state.values[2 * 8 + 3] = .5; // Strictly inactive, despite identical float32 appearance.
+    state.values[5 * 8 + 4] = 1;
+    auto map = label_components(state, .5);
+    require(map.summary.components == 2 && map.labels[16] == map.labels[23], "Invalid label test mask");
+    renderer.upload(state);
+    renderer.upload_components(state.config, map.labels);
+    auto pixel_is = [&](const std::vector<uint8_t> &image, int i, uint32_t id, float light = 1) {
+        auto color = id ? Renderer::component_color(id) : std::array<float, 3>{.035f, .048f, .063f};
+        for (int channel = 0; channel < 3; ++channel)
+            require(std::abs(int(image[i * 4 + channel]) - int(std::round(color[channel] * light * 255))) <=
+                        1,
+                    "Rendered component/color differs from integer cell membership");
+    };
+    ViewSettings v;
+    v.view = 0;
+    auto image = pixels(gpu->device.Get(), gpu->context.Get(), renderer.draw_components(v, 8, 8));
+    for (int i = 0; i < 64; ++i)
+        pixel_is(image, i, map.labels[i]);
+    auto isolated = pixels(gpu->device.Get(), gpu->context.Get(), renderer.draw_components(v, 8, 8, 2));
+    for (int i = 0; i < 64; ++i)
+        pixel_is(isolated, i, map.labels[i] == 2 ? 2 : 0);
+    v.offset[0] = .5;
+    auto shifted = pixels(gpu->device.Get(), gpu->context.Get(), renderer.draw_components(v, 8, 8));
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 8; ++x)
+            pixel_is(shifted, y * 8 + x, map.labels[y * 8 + (x + 4) % 8]);
+    // Non-cubic volume, front and occluded rear one-cell slabs. Isolating the rear must
+    // traverse the front and empty space without skipping its single voxel of thickness.
+    Config c{32, 16, 8, 1};
+    std::vector<uint32_t> labels(c.count());
+    for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 32; ++x) {
+            labels[(6 * 16 + y) * 32 + x] = 17;
+            labels[(1 * 16 + y) * 32 + x] = 9;
+        }
+    renderer.upload_components(c, labels);
+    v = {};
+    v.yaw = v.pitch = 0;
+    float light = .5f + .5f / std::sqrt(1.65f);
+    auto render = [&](uint32_t id) {
+        return pixels(gpu->device.Get(), gpu->context.Get(), renderer.draw_components(v, 33, 33, id));
+    };
+    pixel_is(render(0), 16 * 33 + 16, 17, light);
+    pixel_is(render(9), 16 * 33 + 16, 9, light);
+    pixel_is(render(123), 16 * 33 + 16, 0);
+    v.clip = .4f;
+    pixel_is(render(0), 16 * 33 + 16, 9, light);
+    v.clip = 0;
+    pixel_is(render(0), 16 * 33 + 16, 0);
+    v.clip = 1;
+    v.view = 0;
+    v.slice = 1.5f / 8;
+    pixel_is(render(0), 16 * 33 + 16, 9);
+    v.slice = 6.5f / 8;
+    pixel_is(render(0), 16 * 33 + 16, 17);
+    v.slice = 4.5f / 8;
+    pixel_is(render(0), 16 * 33 + 16, 0);
+    // Returning to scalar rendering must retain its own field dimensions and values.
+    renderer.draw({}, 8, 8);
+    auto before = renderer.capture_bmp();
+    renderer.draw_components(v, 33, 33, 9);
+    renderer.draw({}, 8, 8);
+    require(before == renderer.capture_bmp(), "Component preview corrupted scalar display");
+    std::cout << "PASS exact component masks, colors, seam IDs, isolation, periodic origin, thin/occluded "
+                 "voxels, non-cubic DDA, slices, cutaway and independent scalar display\n";
 }
 void gpu_display_tests() {
     auto shared = std::make_shared<GpuContext>();
@@ -148,8 +224,45 @@ void gpu_display_tests() {
     std::cout << "PASS GPU image equivalence, statistics, immutable bounded leases, concurrent rendering, "
                  "exact live capture and backend/restore transitions\n";
 }
-int main() {
+// Optional read-only diagnostic for checking a real saved field outside the interactive UI.
+void inspect_components(const char *path, const char *output, double threshold) {
+    auto state = load_state(path);
+    auto map = label_components(state, threshold);
+    auto folder = std::filesystem::u8path(output);
+    std::filesystem::create_directories(folder);
+    std::ofstream table(folder / "components.csv");
+    table << "id,cells,winding_axes\n";
+    uint32_t largest = 0;
+    for (uint32_t i = 0; i < map.components.size(); ++i) {
+        const auto &c = map.components[i];
+        table << i + 1 << ',' << c.cells << ',' << c.winding_axes << '\n';
+        if (!largest || c.cells > map.components[largest - 1].cells)
+            largest = i + 1;
+    }
+    auto gpu = std::make_shared<GpuContext>();
+    Renderer renderer(gpu);
+    renderer.upload_components(state.config, map.labels);
+    renderer.upload(state);
+    ViewSettings v;
+    v.threshold = float(threshold);
+    renderer.draw(v, 800, 600);
+    renderer.export_bmp((folder / "scalar.bmp").u8string());
+    renderer.draw_components(v, 800, 600);
+    renderer.export_bmp((folder / "components.bmp").u8string());
+    renderer.draw_components(v, 800, 600, largest);
+    renderer.export_bmp((folder / "largest.bmp").u8string());
+    v.view = 0;
+    renderer.draw_components(v, 800, 600);
+    renderer.export_bmp((folder / "slice.bmp").u8string());
+    std::cout << morphology_csv(map.summary) << '\n';
+}
+int main(int argc, char **argv) {
     try {
+        if (argc == 5 && std::string(argv[1]) == "--inspect-components") {
+            inspect_components(argv[2], argv[3], std::stod(argv[4]));
+            return 0;
+        }
+        component_tests();
         gpu_display_tests();
         ComPtr<ID3D11Device> device;
         ComPtr<ID3D11DeviceContext> context;

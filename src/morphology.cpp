@@ -30,7 +30,8 @@ void Morphology::validate(const Config &c) const {
                     largest_cells <= active_cells - components + 1,
                 "Inconsistent component sizes");
 }
-Morphology measure_morphology(const State &s, double threshold) {
+namespace {
+Morphology analyze(const State &s, double threshold, ComponentMap *map) {
     const auto &c = s.config;
     c.validate();
     require(std::isfinite(threshold) && threshold >= 0 && threshold <= 1, "Shape threshold must be in [0,1]");
@@ -40,6 +41,8 @@ Morphology measure_morphology(const State &s, double threshold) {
         require(std::isfinite(value) && value >= 0 && value <= 1, "Invalid shape field value");
         result.active_cells += value > threshold;
     }
+    if (map)
+        map->labels.resize(c.count());
     if (!result.active_cells)
         return result;
     // Track which periodic image each cell occupies along the traversal tree. A conflicting
@@ -89,9 +92,23 @@ Morphology measure_morphology(const State &s, double threshold) {
         result.largest_cells = std::max(result.largest_cells, uint64_t(queue.size()));
         result.winding_components += axes != 0;
         result.winding_axes |= axes;
+        if (map) {
+            map->components.push_back({uint32_t(queue.size()), axes});
+            for (auto i : queue)
+                map->labels[i] = uint32_t(result.components);
+        }
     }
     result.validate(c);
     return result;
+}
+} // namespace
+Morphology measure_morphology(const State &s, double threshold) {
+    return analyze(s, threshold, nullptr);
+}
+ComponentMap label_components(const State &s, double threshold) {
+    ComponentMap map;
+    map.summary = analyze(s, threshold, &map);
+    return map;
 }
 const char *morphology_csv_header() {
     return "active_cells,components,largest_component_cells,largest_active_fraction,winding_components,"

@@ -45,6 +45,25 @@ void expected(const State &s, uint64_t active, uint64_t components, uint64_t lar
               result.largest_cells == largest && result.winding_components == winding &&
               result.winding_axes == axes,
           "Analytic shape / winding measurement differs");
+    auto map = label_components(s, threshold);
+    check(morphology_csv(map.summary) == morphology_csv(result) && map.components.size() == components &&
+              map.labels.size() == s.values.size(),
+          "Component map summary differs");
+    std::vector<uint32_t> sizes(map.components.size());
+    uint32_t all_axes = 0, winding_count = 0;
+    for (size_t i = 0; i < map.labels.size(); ++i) {
+        auto id = map.labels[i];
+        check((id != 0) == (s.values[i] > threshold) && id <= components,
+              "Labels disagree with exact threshold mask");
+        if (id)
+            ++sizes[id - 1];
+    }
+    for (size_t i = 0; i < sizes.size(); ++i) {
+        check(sizes[i] == map.components[i].cells, "Component size disagrees with cell membership");
+        all_axes |= map.components[i].winding_axes;
+        winding_count += map.components[i].winding_axes != 0;
+    }
+    check(all_axes == axes && winding_count == winding, "Per-component winding disagrees with summary");
     for (const auto &offset : {std::vector<int>{1, 2, 1},
                                std::vector<int>{s.config.width / 2, s.config.height / 2, s.config.depth / 2},
                                std::vector<int>{s.config.width - 1, s.config.height - 1, s.config.depth - 1}})
@@ -78,6 +97,20 @@ void compare_components(const State &s) {
         if (s.values[i] > .5)
             ++sizes[root(i)];
     auto actual = measure_morphology(s, .5);
+    auto map = label_components(s, .5);
+    std::vector<uint32_t> root_label(c.count());
+    for (size_t i = 0; i < s.values.size(); ++i) {
+        if (s.values[i] <= .5) {
+            check(map.labels[i] == 0, "Inactive cell has a component label");
+            continue;
+        }
+        auto r = root(i), id = size_t(map.labels[i]);
+        check(id > 0 && id <= map.components.size(), "Active cell missing from map");
+        check(root_label[r] == 0 || root_label[r] == id, "Oracle component split between labels");
+        root_label[r] = uint32_t(id);
+        check(map.components[id - 1].cells == sizes[r], "Label joins distinct oracle components");
+    }
+    check(map.components.size() == actual.components, "Map has extra/missing components");
     check(actual.components ==
                   uint64_t(std::count_if(sizes.begin(), sizes.end(), [](size_t n) { return n > 0; })) &&
               actual.largest_cells == *std::max_element(sizes.begin(), sizes.end()),
@@ -140,6 +173,19 @@ void morphology_tests() {
                 if (x == 2 || x == 5 || y == 2 || y == 5 || z == 2 || z == 5)
                     cell(s, x, y, z);
     expected(s, 56, 1, 56, 0, 0); // Hollow shell, also after translating through a corner.
+    s = blank(8, 8, 8);
+    for (int t = 0; t < 8; ++t) {
+        cell(s, t, 1, 1);
+        cell(s, 4, 4, t);
+    }
+    cell(s, 0, 6, 6);
+    cell(s, 7, 6, 6);
+    expected(s, 18, 3, 8, 2, 5);
+    auto map = label_components(s);
+    auto at = [&](int x, int y, int z) { return map.components.at(map.labels[(z * 8 + y) * 8 + x] - 1); };
+    check(at(0, 1, 1).winding_axes == 1 && at(4, 4, 0).winding_axes == 4 && at(0, 6, 6).winding_axes == 0 &&
+              at(0, 6, 6).cells == 2,
+          "Winding was assigned to the wrong component");
     for (auto c : {Config{2, 2, 1, 1}, Config{8, 4, 1, 1}, Config{8, 4, 16, 1}}) {
         State full{c, std::vector<double>(c.count(), 1)};
         expected(full, c.count(), 1, c.count(), 1, c.depth > 1 ? 7 : 3);

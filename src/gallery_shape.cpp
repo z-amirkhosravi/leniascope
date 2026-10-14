@@ -1,5 +1,6 @@
 #include "gallery_panel.h"
 #include "imgui.h"
+#include "viewer.h"
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -73,7 +74,7 @@ void GalleryPanel::draw_components(float dpi) {
     if (shape_scalar) {
         ImGui::TextWrapped("All saved values with interpolated color; no component isolation.");
         if (c.depth > 1 && v.view != 0)
-            ImGui::Text("Volume opacity threshold: %.6g", m.threshold);
+            ImGui::Text("Display threshold: %.6g", m.threshold);
     } else if (shape_component) {
         const auto &part = m.components[shape_component - 1];
         ImGui::Text("Only ID %u: %u cells (%.4g%%), loops %s", shape_component, part.cells,
@@ -81,7 +82,6 @@ void GalleryPanel::draw_components(float dpi) {
     } else
         ImGui::TextWrapped("Select a component row to show only that region.");
 
-    v.threshold = float(m.threshold);
     const bool beside =
         ImGui::GetContentRegionAvail().x >= 500 * dpi && ImGui::BeginTable("Shape inspection", 2);
     if (beside) {
@@ -91,36 +91,11 @@ void GalleryPanel::draw_components(float dpi) {
     }
     const float w = std::max(1.f, ImGui::GetContentRegionAvail().x);
     const float h = std::min(w, (beside ? 230 : 170) * dpi);
-    auto image = shape_scalar ? m.renderer->draw(v, int(w), int(h))
-                              : m.renderer->draw_components(v, int(w), int(h), shape_component);
-    ImGui::InvisibleButton("##component-canvas", {w, h});
-    ImGui::GetWindowDrawList()->AddImage((ImTextureID)image, ImGui::GetItemRectMin(),
-                                         ImGui::GetItemRectMax());
-    if (ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY)) {
-        const auto &io = ImGui::GetIO();
-        if (c.depth > 1 && v.view != 0) {
-            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-                v.yaw += io.MouseDelta.x * .008f;
-                v.pitch = std::clamp(v.pitch + io.MouseDelta.y * .008f, -1.5f, 1.5f);
-            }
-            v.distance = std::clamp(v.distance * std::exp(-io.MouseWheel * .12f), .7f, 5.f);
-        } else
-            v.zoom = std::clamp(v.zoom * std::exp(io.MouseWheel * .12f), .25f, 16.f);
-    }
-    if (c.depth > 1) {
-        ImGui::RadioButton("3D", &v.view, 1);
-        ImGui::SameLine();
-        ImGui::RadioButton("Slice", &v.view, 0);
-        if (!beside)
-            ImGui::SameLine();
-        ImGui::TextDisabled("Drag to rotate; wheel to zoom");
-        if (v.view == 0) {
-            ImGui::SetNextItemWidth(110 * dpi);
-            ImGui::Combo("Axis", &v.axis, "X\0Y\0Z\0");
-            ImGui::SliderFloat("Slice position", &v.slice, 0, .999999f, "%.3f");
-        }
-    } else
-        ImGui::TextDisabled("Wheel to zoom; move the origin in View controls");
+    ViewerOptions viewer_options;
+    viewer_options.components = !shape_scalar;
+    viewer_options.isolate = shape_component;
+    viewer_options.measured_threshold = float(m.threshold);
+    draw_viewer("Shape viewer", *m.renderer, c, v, {w, h}, dpi, viewer_options);
     if (beside)
         ImGui::TableNextColumn();
     if (ImGui::BeginTable("Components", 4,
@@ -167,25 +142,6 @@ void GalleryPanel::draw_components(float dpi) {
         ImGui::EndTable();
     ImGui::TextWrapped("Largest first. IDs/colors belong to this measurement; they can change when you "
                        "remeasure. One color on opposite sides can be one region across the periodic seam.");
-    if (ImGui::CollapsingHeader("View controls")) {
-        if (c.depth > 1 && v.view != 0)
-            ImGui::SliderFloat("Cutaway", &v.clip, 0, 1, "%.3f");
-        ImGui::SliderFloat("Origin X", &v.offset[0], 0, 1, "%.3f");
-        ImGui::SliderFloat("Origin Y", &v.offset[1], 0, 1, "%.3f");
-        if (c.depth > 1)
-            ImGui::SliderFloat("Origin Z", &v.offset[2], 0, 1, "%.3f");
-        if (shape_scalar && c.depth > 1)
-            ImGui::SliderFloat("Opacity", &v.opacity, .05f, 8.f, "%.2f");
-        if (ImGui::Button("Reset inspection view")) {
-            v = selected->view;
-            v.view = c.depth > 1 ? 1 : 0;
-            if (c.depth == 1)
-                v.axis = 2;
-            v.clip = 1;
-        }
-        ImGui::TextWrapped("Camera, cutaway and origin affect only this preview. Hidden cells still belong "
-                           "to the measured components. A slice of one component may look disconnected.");
-    }
 }
 void GalleryPanel::draw_shape(float dpi, bool closing) {
     ImGui::TextWrapped("Colors identify connected regions of the saved field, including periodic edges.");

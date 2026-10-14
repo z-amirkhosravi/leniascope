@@ -7,6 +7,7 @@
 #include "imgui.h"
 #include "renderer.h"
 #include "runner.h"
+#include "viewer.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -144,29 +145,6 @@ void save_backbuffer(ID3D11Device *device, ID3D11DeviceContext *context, IDXGISw
     out.write(reinterpret_cast<char *>(pixels.data()), pixels.size());
     if (!out)
         throw std::runtime_error("Screenshot write failed");
-}
-void draw_box(const ViewSettings &v, const Config &c, ImVec2 origin, ImVec2 size) {
-    float cp = std::cos(v.pitch), sp = std::sin(v.pitch), cy = std::cos(v.yaw), sy = std::sin(v.yaw),
-          maximum = float(std::max({c.width, c.height, c.depth}));
-    ImVec2 points[8];
-    for (int i = 0; i < 8; ++i) {
-        float x = ((i & 1) ? .5f : -.5f) * c.width / maximum - sy * cp * v.distance,
-              y = ((i & 2) ? .5f : -.5f) * c.height / maximum - sp * v.distance,
-              z = ((i & 4) ? .5f : -.5f) * c.depth / maximum - cy * cp * v.distance;
-        float depth = -sy * cp * x - sp * y - cy * cp * z;
-        if (depth <= 0)
-            return;
-        float px = cy * x - sy * z, py = -sy * sp * x + cp * y - cy * sp * z;
-        points[i] = {origin.x + (.5f + px / depth / (size.x / size.y)) * size.x,
-                     origin.y + (.5f - py / depth) * size.y};
-    }
-    auto *draw = ImGui::GetWindowDrawList();
-    draw->PushClipRect(origin, {origin.x + size.x, origin.y + size.y}, true);
-    for (int i = 0; i < 8; ++i)
-        for (int axis : {1, 2, 4})
-            if (!(i & axis))
-                draw->AddLine(points[i], points[i | axis], IM_COL32(100, 150, 164, 95));
-    draw->PopClipRect();
 }
 int run(HINSTANCE instance, int show, const StartupOptions &options) {
     const bool smoke = options.smoke;
@@ -513,6 +491,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         try {
             if (ImGui::Button(frame && frame->running ? "Pause" : "Play", {88 * dpi, 0}) ||
                 (frame && !close_requested && !gallery.active() && !editor.active() &&
+                 !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
                  ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
                 runner.play(!(frame && frame->running));
             ImGui::SameLine();
@@ -740,39 +719,6 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             }
             ImGui::Spacing();
             ImGui::Separator();
-            ImGui::TextDisabled("APPEARANCE");
-            if (is_volume)
-                ImGui::Combo("View", &view.view, "Slice\0Transparent volume\0Isosurface\0");
-            const auto &palettes = Renderer::palette_names();
-            if (ImGui::BeginCombo("Palette", palettes.at(view.palette).c_str())) {
-                for (size_t i = 0; i < palettes.size(); ++i)
-                    if (ImGui::Selectable(palettes[i].c_str(), view.palette == int(i)))
-                        view.palette = int(i);
-                ImGui::EndCombo();
-            }
-            if (view.view == 0) {
-                if (is_volume) {
-                    ImGui::Combo("Slice axis", &view.axis, "X\0Y\0Z\0");
-                    ImGui::SliderFloat("Position", &view.slice, 0, 1, "%.3f");
-                }
-                ImGui::SliderFloat("Zoom", &view.zoom, .25f, 4, "%.2f");
-            } else {
-                if (view.view == 1)
-                    ImGui::SliderFloat("Opacity", &view.opacity, .1f, 10, "%.2f");
-                ImGui::SliderFloat(view.view == 2 ? "Surface value" : "Opacity floor", &view.threshold, 0, 1,
-                                   "%.3f");
-                ImGui::SliderFloat("Cutaway Z", &view.clip, 0, 1, "%.2f");
-                ImGui::SliderFloat("Sample spacing", &view.quality, .3f, 2, "%.2f");
-                if (ImGui::Button("Reset camera", {-1, 0})) {
-                    view.yaw = .65f;
-                    view.pitch = .3f;
-                    view.distance = 1.9f;
-                }
-            }
-            if (ImGui::CollapsingHeader("Periodic view origin"))
-                ImGui::SliderFloat3("Offset", view.offset, 0, 1, "%.2f");
-            ImGui::Spacing();
-            ImGui::Separator();
             ImGui::TextDisabled("EXPERIMENT");
             if (ImGui::Button("Pattern gallery", {-1, 0}))
                 gallery.open();
@@ -847,23 +793,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         ImVec2 image_size = ImGui::GetContentRegionAvail();
         image_size.y = std::max(1.f, image_size.y - 118 * dpi);
         image_size.x = std::max(1.f, image_size.x);
-        auto draw_start = std::chrono::steady_clock::now();
-        auto image = renderer.draw(view, int(image_size.x), int(image_size.y));
-        double draw_submit_ms = milliseconds(draw_start, std::chrono::steady_clock::now());
-        ImVec2 image_origin = ImGui::GetCursorScreenPos();
-        ImGui::Image((ImTextureID)(intptr_t)image, image_size);
-        if (frame && is_volume && view.view != 0)
-            draw_box(view, frame->state.config, image_origin, image_size);
-        if (ImGui::IsItemHovered()) {
-            if (is_volume && view.view != 0) {
-                if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-                    view.yaw += io.MouseDelta.x * .008f;
-                    view.pitch = std::clamp(view.pitch + io.MouseDelta.y * .008f, -1.5f, 1.5f);
-                }
-                view.distance = std::clamp(view.distance * std::exp(-io.MouseWheel * .12f), .7f, 5.f);
-            } else
-                view.zoom = std::clamp(view.zoom * std::exp(io.MouseWheel * .12f), .25f, 4.f);
-        }
+        double draw_submit_ms =
+            draw_viewer("Live viewer", renderer, frame ? frame->state.config : edit, view, image_size, dpi);
         if (frame) {
             ImGui::Text("%.1f steps/s    %.2f ms compute    %.0f display fps", frame->steps_per_second,
                         frame->timings.total_ms, io.Framerate);

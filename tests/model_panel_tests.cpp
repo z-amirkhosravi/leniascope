@@ -125,6 +125,50 @@ void model_panel_tests() {
     frame();
     click(window->Pos.x + 80, row_y(6));
     require(apply_count == 2, "Smooth rule controls displaced Apply incorrectly");
+    applied = draft;
+    frame();
+    auto curve_vertices = [&](ImU32 color) {
+        std::vector<ImVec2> points;
+        for (const auto &vertex : window->DrawList->VtxBuffer)
+            if (vertex.col == color)
+                points.push_back(vertex.pos);
+        require(!points.empty(), "Growth response curve is missing");
+        return points;
+    };
+    auto same_curve = [](const auto &a, const auto &b) {
+        return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](ImVec2 p, ImVec2 q) {
+                   return std::abs(p.x - q.x) < 1e-4f && std::abs(p.y - q.y) < 1e-4f;
+               });
+    };
+    const float slider_left = window->Pos.x + style.WindowPadding.x;
+    click(slider_left + 8, row_y(5));
+    const float low_sharpness = float(draft.smoothness);
+    const auto soft_curve = curve_vertices(IM_COL32(97, 217, 196, 255));
+    const auto applied_curve = curve_vertices(IM_COL32(145, 155, 165, 255));
+    click(slider_left + (window->Size.x - 2 * style.WindowPadding.x) * .65f - 8, row_y(5));
+    require(draft.smoothness > low_sharpness + 20 &&
+                !same_curve(soft_curve, curve_vertices(IM_COL32(97, 217, 196, 255))),
+            "Sharpness slider did not visibly change the preview response");
+    require(same_curve(applied_curve, curve_vertices(IM_COL32(145, 155, 165, 255))),
+            "Editing sharpness changed the applied comparison curve");
+    draft.smoothness = 1;
+    applied = draft;
+    frame();
+    const auto before_cell_change = curve_vertices(IM_COL32(97, 217, 196, 255));
+    const float cell_row = window->Pos.y + window->TitleBarHeight + style.WindowPadding.y +
+                           7 * ImGui::GetFrameHeightWithSpacing() +
+                           3 * ImGui::GetTextLineHeightWithSpacing() + 190 + style.ItemSpacing.y;
+    click(slider_left + 8, cell_row + ImGui::GetFrameHeight() * .5f);
+    const auto empty_cell_curve = curve_vertices(IM_COL32(97, 217, 196, 255));
+    require(!same_curve(before_cell_change, empty_cell_curve),
+            "Preview cell control did not update the graph");
+    const float graph_top = cell_row + ImGui::GetFrameHeightWithSpacing();
+    for (const auto &point : empty_cell_curve)
+        require(point.y >= graph_top + 6 && point.y <= graph_top + 92,
+                "Smooth response at a boundary cell escaped the graph's vertical scale");
+    click(window->Pos.x + 80, row_y(6));
+    require(apply_count == 2 && same_model_parameters(draft, applied),
+            "Preview cell value changed the simulation parameters or enabled Apply");
     io.DisplaySize = {500, 420};
     frame();
     frame();

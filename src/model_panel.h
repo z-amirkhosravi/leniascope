@@ -22,5 +22,6 @@ class ModelPanel {
     bool visible = false, focus = false;
     int preview_radius = 0, preview_dimension = 0;
     double preview_extent = 0;
+    float preview_cell = .25f;
 };
 } // namespace lenia

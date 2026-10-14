@@ -35,30 +35,11 @@ State kernel_preview(const Config &c, double half_extent) {
     return result;
 }
 namespace {
-void growth_plot(const Config &draft, const Config &applied, float dpi) {
-    ImGui::TextUnformatted("Change per step (cell value 0.5)");
-    const auto start = ImGui::GetCursorScreenPos();
-    const ImVec2 size{ImGui::GetContentRegionAvail().x, 112 * dpi};
-    ImGui::InvisibleButton("Growth response", size);
-    const ImVec2 lo{start.x + 42 * dpi, start.y + 8 * dpi};
-    const ImVec2 hi{start.x + size.x - 8 * dpi, start.y + size.y - 22 * dpi};
-    const float limit = float(std::max(draft.dt, applied.dt));
-    const float middle = (lo.y + hi.y) * .5f;
-    auto *draw = ImGui::GetWindowDrawList();
-    draw->AddRectFilled(start, {start.x + size.x, start.y + size.y}, IM_COL32(9, 12, 16, 255), 4 * dpi);
-    draw->AddLine({lo.x, middle}, {hi.x, middle}, IM_COL32(75, 90, 100, 255));
-    draw->AddLine(lo, {lo.x, hi.y}, IM_COL32(75, 90, 100, 255));
-    const auto text = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    char number[32];
-    std::snprintf(number, sizeof number, "+%.3g", limit);
-    draw->AddText({start.x + 2 * dpi, lo.y}, text, number);
-    std::snprintf(number, sizeof number, "-%.3g", limit);
-    draw->AddText({start.x + 2 * dpi, hi.y - ImGui::GetFontSize()}, text, number);
-    draw->AddText({lo.x, hi.y + 3 * dpi}, text, "0");
-    draw->AddText({hi.x - ImGui::CalcTextSize("1").x, hi.y + 3 * dpi}, text, "1");
-    const char *axis = "Neighborhood value";
-    draw->AddText({(lo.x + hi.x - ImGui::CalcTextSize(axis).x) * .5f, hi.y + 3 * dpi}, text, axis);
-    auto curve = [&](const Config &c, ImU32 color, float thickness) {
+void growth_plot(const Config &draft, const Config &applied, float &cell, float dpi) {
+    ImGui::TextUnformatted("Change per step");
+    ImGui::SetNextItemWidth(145 * dpi);
+    ImGui::SliderFloat("Preview cell value", &cell, 0, 1, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    auto response = [cell](const Config &c) {
         std::vector<double> samples;
         for (int i = 0; i <= 256; ++i)
             samples.push_back(i / 256.);
@@ -66,21 +47,54 @@ void growth_plot(const Config &draft, const Config &applied, float dpi) {
         for (int i = -40; i <= 40; ++i)
             samples.push_back(std::clamp(c.mu + c.sigma * i / 8., 0., 1.));
         std::sort(samples.begin(), samples.end());
+        std::vector<ImVec2> values;
+        for (double u : samples)
+            values.push_back({float(u), float(advance_value(cell, u, c) - cell)});
+        return values;
+    };
+    const auto current = response(draft), previous = response(applied);
+    const float base = float(std::max(draft.dt, applied.dt));
+    float limit = base;
+    // Smooth birth/death rates near empty/full cells can exceed one unit per time.
+    // Include both curves in the scale instead of drawing them outside the graph.
+    for (const auto *values : {&current, &previous})
+        for (const auto &value : *values)
+            limit = std::max(limit, std::ceil(std::abs(value.y) / base * 4) * base / 4);
+    const auto start = ImGui::GetCursorScreenPos();
+    const ImVec2 size{ImGui::GetContentRegionAvail().x, 112 * dpi};
+    ImGui::InvisibleButton("Growth response", size);
+    char positive[32], negative[32];
+    std::snprintf(positive, sizeof positive, "+%.3g", limit);
+    std::snprintf(negative, sizeof negative, "-%.3g", limit);
+    const float label_width = std::max(ImGui::CalcTextSize(positive).x, ImGui::CalcTextSize(negative).x);
+    const ImVec2 lo{start.x + label_width + 6 * dpi, start.y + 8 * dpi};
+    const ImVec2 hi{start.x + size.x - 8 * dpi, start.y + size.y - 22 * dpi};
+    const float middle = (lo.y + hi.y) * .5f;
+    auto *draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(start, {start.x + size.x, start.y + size.y}, IM_COL32(9, 12, 16, 255), 4 * dpi);
+    draw->AddLine({lo.x, middle}, {hi.x, middle}, IM_COL32(75, 90, 100, 255));
+    draw->AddLine(lo, {lo.x, hi.y}, IM_COL32(75, 90, 100, 255));
+    const auto text = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    draw->AddText({start.x + 2 * dpi, lo.y}, text, positive);
+    draw->AddText({start.x + 2 * dpi, hi.y - ImGui::GetFontSize()}, text, negative);
+    draw->AddText({lo.x, hi.y + 3 * dpi}, text, "0");
+    draw->AddText({hi.x - ImGui::CalcTextSize("1").x, hi.y + 3 * dpi}, text, "1");
+    const char *axis = "Neighborhood value";
+    draw->AddText({(lo.x + hi.x - ImGui::CalcTextSize(axis).x) * .5f, hi.y + 3 * dpi}, text, axis);
+    auto curve = [&](const std::vector<ImVec2> &values, ImU32 color, float thickness) {
         std::vector<ImVec2> points;
-        for (double u : samples) {
-            float change = float(advance_value(.5, u, c) - .5);
+        for (const auto &value : values)
             points.push_back(
-                {lo.x + float(u) * (hi.x - lo.x), middle - change / limit * (hi.y - lo.y) * .5f});
-        }
+                {lo.x + value.x * (hi.x - lo.x), middle - value.y / limit * (hi.y - lo.y) * .5f});
         draw->AddPolyline(points.data(), int(points.size()), color, 0, thickness * dpi);
     };
     if (!same_model_parameters(draft, applied))
-        curve(applied, IM_COL32(145, 155, 165, 255), 1);
-    curve(draft, IM_COL32(97, 217, 196, 255), 2);
+        curve(previous, IM_COL32(145, 155, 165, 255), 1);
+    curve(current, IM_COL32(97, 217, 196, 255), 2);
     if (ImGui::IsItemHovered()) {
         const double u = std::clamp(double((ImGui::GetIO().MousePos.x - lo.x) / (hi.x - lo.x)), 0., 1.);
-        ImGui::SetTooltip("Neighborhood %.4f\nChange: %+.5f\nApplied: %+.5f", u,
-                          advance_value(.5, u, draft) - .5, advance_value(.5, u, applied) - .5);
+        ImGui::SetTooltip("Neighborhood %.4f\nPreview: %+.6f\nApplied: %+.6f", u,
+                          advance_value(cell, u, draft) - cell, advance_value(cell, u, applied) - cell);
     }
 }
 } // namespace
@@ -172,7 +186,7 @@ bool ModelPanel::draw(Config &draft, const Config &applied, float dpi, bool disa
         apply = ImGui::Button("Apply", {-1, 0});
         ImGui::EndDisabled();
         draw_kernel(draft, applied, dpi);
-        growth_plot(draft, applied, dpi);
+        growth_plot(draft, applied, preview_cell, dpi);
         ImGui::PopItemWidth();
         ImGui::EndDisabled();
     }

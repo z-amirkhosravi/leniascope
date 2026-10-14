@@ -191,7 +191,8 @@ std::string batch_csv(const BatchResult &r) {
     out.imbue(std::locale::classic());
     out << std::setprecision(17)
         << "run,parameter,value,seed,status,steps,elapsed,mean,active_fraction,relative_mismatch,"
-           "dx,dy,dz,shift_valid,initial_rounding_rms,backend,initial_hash,final_hash,label\n";
+           "dx,dy,dz,shift_valid,initial_rounding_rms,backend,initial_hash,final_hash,label,"
+        << morphology_csv_header() << '\n';
     for (const auto &run : r.runs) {
         const auto &report = run.report;
         const auto &last = report.samples.back();
@@ -208,7 +209,7 @@ std::string batch_csv(const BatchResult &r) {
             out << ",,";
         out << ',' << last.shift_valid << ',' << report.initial_rounding_rms << ','
             << csv_text(report.backend) << ',' << run.initial_hash << ',' << run.final_hash << ','
-            << csv_text(run.label) << '\n';
+            << csv_text(run.label) << ',' << morphology_csv(last.morphology) << '\n';
     }
     return out.str();
 }

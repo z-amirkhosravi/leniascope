@@ -36,6 +36,10 @@ class GalleryPanel {
         std::string id;
         BatchResult result;
     };
+    struct ShapeMeasurement {
+        Morphology shape;
+        double threshold = .01;
+    };
     struct Result {
         GalleryCatalog catalog;
         std::optional<GalleryEntry> entry;
@@ -45,6 +49,7 @@ class GalleryPanel {
         std::optional<GalleryStudies> studies;
         std::optional<std::vector<SavedBatch>> batches;
         std::optional<SavedBatch> batch;
+        std::optional<ShapeMeasurement> shape;
         std::string studies_source;
     };
     enum class Job {
@@ -57,7 +62,8 @@ class GalleryPanel {
         Study,
         SaveStudy,
         Batch,
-        BatchLabel
+        BatchLabel,
+        Shape
     } job = Job::None;
     std::filesystem::path root;
     bool writable, opened = false, editing = false;
@@ -95,6 +101,11 @@ class GalleryPanel {
     int batch_index = 0, batch_run = 0;
     char batch_value_text[2048] = "0.14, 0.15, 0.16", batch_label[257]{};
     std::atomic<int> batch_progress{0};
+    double shape_threshold = .01;
+    std::optional<ShapeMeasurement> shape;
+    void begin_shape();
+    void draw_shape(float dpi, bool closing);
+    static void draw_shape_summary(const std::optional<Morphology> &, const Config &, double threshold);
     void begin_batch();
     void draw_batch(float dpi, bool closing);
     void batch_field(bool final);

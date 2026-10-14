@@ -62,13 +62,26 @@ void validate(const BehaviorReport &r) {
                     s.dx <= r.config.width / 2 && s.dy >= -r.config.height / 2 &&
                     s.dy <= r.config.height / 2 && s.dz >= -r.config.depth / 2 && s.dz <= r.config.depth / 2,
                 "Study measurements out of range");
+        require(bool(s.morphology) == bool(r.samples.front().morphology), "Mixed shape measurement coverage");
+        if (s.morphology) {
+            s.morphology->validate(r.config);
+            require(std::abs(double(s.morphology->active_cells) / r.config.count() - s.active_fraction) <
+                        1e-12,
+                    "Shape mask disagrees with activity fraction");
+        }
         previous = s.step;
     }
 }
 void sample_row(std::ostream &out, const BehaviorSample &s, char separator) {
     out << s.step << separator << s.elapsed << separator << s.mean << separator << s.active_fraction
         << separator << s.raw_rms << separator << s.aligned_rms << separator << s.relative_rms << separator
-        << s.dx << separator << s.dy << separator << s.dz << separator << s.shift_valid << '\n';
+        << s.dx << separator << s.dy << separator << s.dz << separator << s.shift_valid;
+    if (s.morphology) {
+        const auto &m = *s.morphology;
+        out << separator << m.active_cells << separator << m.components << separator << m.largest_cells
+            << separator << m.winding_components << separator << m.winding_axes;
+    }
+    out << '\n';
 }
 } // namespace
 void BehaviorOptions::validate() const {
@@ -102,6 +115,7 @@ BehaviorReport behavior_study(const State &source, Solver &solver, const Behavio
     r.reference_rms = baseline.rms;
     r.initial_rounding_rms = recurrence_error(source, reference, 0, 0, 0);
     r.samples.push_back({0, 0, baseline.mean, baseline.active});
+    r.samples.back().morphology = measure_morphology(reference, options.activity_threshold);
     auto record = [&] {
         auto state = solver.snapshot();
         require(state.config == reference.config && state.steps == reference.steps + r.completed_steps,
@@ -123,6 +137,7 @@ BehaviorReport behavior_study(const State &source, Solver &solver, const Behavio
             s.shift_valid = t.unique;
         }
         s.relative_rms = baseline.rms > 0 ? s.aligned_rms / baseline.rms : 0;
+        s.morphology = measure_morphology(state, options.activity_threshold);
         r.samples.push_back(s);
     };
     while (r.completed_steps < options.steps) {
@@ -148,7 +163,7 @@ std::string encode_behavior(const BehaviorReport &r) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
     auto &c = r.config;
-    out << std::setprecision(17) << "LeniascopeBehavior 1\n"
+    out << std::setprecision(17) << "LeniascopeBehavior " << (r.samples.front().morphology ? 2 : 1) << '\n'
         << std::quoted(r.source_id) << ' ' << r.source_hash << '\n'
         << std::quoted(r.source_backend) << '\n'
         << std::quoted(r.backend) << '\n'
@@ -178,13 +193,19 @@ BehaviorReport decode_behavior(const std::string &text) {
         rule >> c.smoothness >> r.initial_step >> r.initial_time >> r.seed >> r.options.steps >>
         r.options.sample_every >> r.options.activity_threshold >> r.completed_steps >> r.stopped >>
         r.reference_rms >> r.initial_rounding_rms >> r.wall_seconds >> count;
-    require(bool(in) && magic == "LeniascopeBehavior" && version == 1 && count >= 1 && count <= 257,
+    require(bool(in) && magic == "LeniascopeBehavior" && (version == 1 || version == 2) && count >= 1 &&
+                count <= 257,
             "Invalid study report header");
     c.rule = Rule(rule);
     r.samples.resize(count);
-    for (auto &s : r.samples)
+    for (auto &s : r.samples) {
         in >> s.step >> s.elapsed >> s.mean >> s.active_fraction >> s.raw_rms >> s.aligned_rms >>
             s.relative_rms >> s.dx >> s.dy >> s.dz >> s.shift_valid;
+        if (version == 2) {
+            auto &m = s.morphology.emplace();
+            in >> m.active_cells >> m.components >> m.largest_cells >> m.winding_components >> m.winding_axes;
+        }
+    }
     require(bool(in), "Truncated study report");
     in >> std::ws;
     require(in.eof(), "Unexpected study data");
@@ -196,7 +217,8 @@ std::string behavior_csv(const BehaviorReport &r) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
     out << std::setprecision(17)
-        << "step,elapsed,mean,active_fraction,raw_rms,aligned_rms,relative_rms,dx,dy,dz,shift_valid\n";
+        << "step,elapsed,mean,active_fraction,raw_rms,aligned_rms,relative_rms,dx,dy,dz,shift_valid,"
+        << morphology_csv_header() << '\n';
     for (const auto &s : r.samples) {
         // Leave the normalized metric empty for an empty reference, and displacement empty
         // when the correlation does not identify a unique location (including flat fields).
@@ -209,7 +231,7 @@ std::string behavior_csv(const BehaviorReport &r) {
             out << s.dx << ',' << s.dy << ',' << s.dz;
         else
             out << ",,";
-        out << ',' << s.shift_valid << '\n';
+        out << ',' << s.shift_valid << ',' << morphology_csv(s.morphology) << '\n';
     }
     return out.str();
 }

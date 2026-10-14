@@ -74,6 +74,10 @@ void behavior_tests() {
         report.source_id = "A \"quoted\" source";
         report.source_hash = 123456;
         auto text = encode_behavior(report);
+        check(text.find("LeniascopeBehavior 2\n") == 0, "Shape report did not use schema 2");
+        for (const auto &sample : report.samples)
+            check(morphology_csv(sample.morphology) == morphology_csv(report.samples.front().morphology),
+                  "Moving shape changed its component or winding measurements");
         check(encode_behavior(decode_behavior(text)) == text,
               "Study persistence lost measurements/provenance");
         for (auto broken : {text + "junk", text.substr(0, text.size() / 2)}) {
@@ -127,6 +131,26 @@ void behavior_tests() {
         control.step();
     check(observed.snapshot().values == control.snapshot().values && actual.initial_rounding_rms == 0,
           "Measurements changed CPU evolution");
+    check(morphology_csv(actual.samples.back().morphology) ==
+              morphology_csv(measure_morphology(control.snapshot(), .01)),
+          "Study endpoint shape differs from independent measurement");
+    auto bad_shape = actual;
+    ++bad_shape.samples.back().morphology->active_cells;
+    bool rejected = false;
+    try {
+        encode_behavior(bad_shape);
+    } catch (...) {
+        rejected = true;
+    }
+    check(rejected, "Study accepted inconsistent active-cell count");
+    const std::string legacy = "LeniascopeBehavior 1\n\"legacy\" 42\n\"CPU\"\n\"CPU\"\n"
+                               "4 4 1 1 0.15 0.017 0.1 0 12\n0 0 7\n1 1 0.01\n0 1 0 0 0\n1\n"
+                               "0 0 0 0 0 0 0 0 0 0 0\n";
+    auto old = decode_behavior(legacy);
+    check(!old.samples.front().morphology && encode_behavior(old).find("LeniascopeBehavior 1\n") == 0,
+          "Legacy report was assigned invented shape measurements");
+    check(behavior_csv(old).find("0,,,,,,,,\n") != std::string::npos,
+          "Missing legacy shape measurements did not export as empty CSV cells");
     auto exhausted = localized({16, 8, 1, 2});
     exhausted.steps = std::numeric_limits<uint64_t>::max();
     ShiftSolver exhausted_solver(exhausted);

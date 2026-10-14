@@ -50,6 +50,7 @@ void batch_tests(bool cpu_only) {
               source.steps == 19,
           "Batch changed its input or did not complete");
     check(batch_csv(read_batch(root / "replay")) == batch_csv(result), "Batch roundtrip lost results");
+    check(result.runs[0].report.samples.back().morphology.has_value(), "Batch lost shape measurements");
     for (int i = 0; i < 2; ++i) {
         auto initial = load_batch_field(root / "replay", i, false);
         auto final = load_batch_field(root / "replay", i, true);
@@ -68,6 +69,17 @@ void batch_tests(bool cpu_only) {
           "Outcome label / CSV escaping lost");
     label_batch_run(root / "replay", 0, "tubes"); // Replace an existing annotation on Windows as well.
     check(load_batch_field(root / "replay", 0, false).values == original, "Label changed starting field");
+    auto legacy_report = result.runs[0].report;
+    for (auto &sample : legacy_report.samples)
+        sample.morphology.reset();
+    std::ofstream(root / "replay" / "run-0001" / "behavior" / "report.txt") << encode_behavior(legacy_report);
+    auto legacy_batch = read_batch(root / "replay");
+    check(!legacy_batch.runs[0].report.samples.back().morphology &&
+              legacy_batch.runs[1].report.samples.back().morphology.has_value(),
+          "Old batch report did not remain readable");
+    label_batch_run(root / "replay", 0, "unknown");
+    check(!read_batch(root / "replay").runs[0].report.samples.back().morphology,
+          "Labeling invented missing shape measurements");
     rejects([&] { run_batch(root / "replay", source, plan, "", study_solver); });
     rejects([&] { load_batch_field(root / "replay", -1, false); });
     auto partial = run_batch(root / "partial", source, plan, "", study_solver,

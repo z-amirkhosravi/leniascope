@@ -96,6 +96,7 @@ Actual-window profiling on the same machine also sustained **120 and 240 steps/s
 - **Save state** writes a full 2D or 3D checkpoint. **Load state** pauses on the loaded state. **Export view** writes the rendered viewport as a BMP. The inspector scrolls on smaller windows; measurements include an activity plot and separate compute/display timings.
 - **Pattern gallery** keeps independent captures with previews, notes, tags and provenance. Browse or filter entries and restore a saved field with its view.
 - Its **Behavior study** tab evolves a separate copy of a saved pattern and records motion, shape mismatch and activity over a chosen duration, with persistent plots and CSV reports.
+- **Shape** measures periodic connected components in a saved field at an adjustable threshold. New behavior studies and batches also record these measurements over time.
 - Camera, palettes, slice/volume settings, playback rate, compute backend, selected mode, and window size/maximization are remembered between launches. The activity plot starts afresh when a session is reset or loaded.
 
 ## Initialization and grid size
@@ -149,6 +150,22 @@ Use a native Windows directory for large experimental workspaces when possible. 
 Saving writes a private staging directory and commits it with one rename. Interrupted staging directories are ignored; malformed entries are reported without hiding valid ones. Checksums detect accidental checkpoint/preview corruption, and reload cross-checks the stored provenance and scalar measurements. These are integrity checks, not cryptographic authentication or guarantees against hardware failure. A damaged preview does not prevent loading an intact field. Only the workspace-owning window can write gallery entries. Catalog and file work runs in the background; capture/readback and preview creation can briefly delay a large-grid operation. Closing waits for accepted gallery work before taking the final workspace snapshot and reports write failures.
 
 The portable `src/gallery.*` store is separate from the ImGui interface in `src/gallery_panel.*`; `src/batch.*` provides the batch engine and store, with controls in `src/gallery_batch.cpp`. Live numerical stepping remains in the simulation worker. `python tools/test_gallery.py <GUI> <CLI> --cuda` exercises the real GUI capture/save/browse/reload, behavior studies, batches, outcome labels and endpoint loading for CPU, DirectCompute and CUDA in both dimensions, checking full checkpoint bytes, camera settings, the inactive session and persisted reports. Omit `--cuda` for a standard build. The application's `--gallery-smoke` test mode requires an explicit isolated `--workspace`.
+
+### Shape measurements
+
+Select an entry and open **Shape**, set the activity threshold, then **Measure saved field**. This reads the saved scalar values without stepping the simulation. Cells are active when their value is **strictly greater** than the threshold. Connectivity uses four edge neighbors in 2D or six face neighbors in 3D, including neighbors across periodic boundaries; diagonal/corner-only contacts remain separate. The threshold is independent of the renderer's opacity/surface controls.
+
+The measurements report active-cell count, connected-component count, the largest component's cell count and its share of **active cells**, plus the number of components containing a **periodic loop** and the directions those loops wind around. A blob split by a display edge is still one component. Crossing that edge does not by itself imply a periodic loop: the code requires a closed path whose lift to the periodically repeated grid returns to a different image of the starting cell. A local annulus or hollow shell can therefore have no periodic loops. Direction flags are the union over all components; they do not describe the number of independent cycles, cavities, knots, or detailed topology.
+
+Try several thresholds: a low-amplitude bridge may join two otherwise separate regions. These measurements describe thresholded geometry, not verified organism counts or automatic sphere/tube/Orbium labels. The Shape tab measures the saved field exactly; study and batch measurements use the solver's actual field (including recorded initial float32 rounding on GPU runs).
+
+New **Behavior study** reports include a component-count plot and final shape statistics under **Connected components and periodic loops**. **Batches** shows component counts in its **Parts** column and details under **Final shape measurements**. The existing activity threshold controls all these sampled masks. CSV exports append `active_cells`, `components`, `largest_component_cells`, `largest_active_fraction`, `winding_components`, and X/Y/Z winding flags. The largest share is empty for an empty mask. Behavior report schema 2 stores the counts at every sample. Schema 1 remains readable and its missing measurements display as unavailable and export as empty cells; existing reports are not recomputed or rewritten when browsed.
+
+The portable analysis is in `src/morphology.*`. It runs on the study/background thread, using at most 16 bytes per grid cell of additional traversal storage (256 MiB at 256³). Like the existing FFT alignment measurements, it adds CPU work at sampling times even with CUDA evolution. The CLI can inspect any checkpoint without evolution:
+
+```powershell
+.\LeniascopeCli.exe shape pattern.lenia --threshold 0.01
+```
 
 ### Behavior studies
 
@@ -301,7 +318,7 @@ These are short local headless measurements, not universal speedups or display f
 
 ## Research direction and next work
 
-The gallery stores actual fields with previews, model parameters, provenance and numerical backend, and attaches repeatable behavior measurements over a specified duration. Batches now support exact-field parameter comparisons and repeated seed-recipe sweeps, saved endpoints and manual outcome labels. A seed recipe alone cannot stand in for a discovered organism. Candidate/reference labels remain manual; they are not proofs of stability. Next, use the saved single Orbium, separated pairs and transient conjoined pairs to compare trajectories and refine measurement intervals. The items below are research plans, not implemented classifiers or established explanations.
+The gallery stores actual fields with previews, model parameters, provenance and numerical backend, and attaches repeatable behavior measurements over a specified duration. Batches support exact-field parameter comparisons and repeated seed-recipe sweeps, saved endpoints and manual outcome labels. Periodic component counts and winding measurements are now available for saved fields and sampled trajectories. A seed recipe alone cannot stand in for a discovered organism. Candidate/reference labels remain manual; they are not proofs of stability. Next, use the saved single Orbium, separated pairs and transient conjoined pairs to compare trajectories and refine measurement intervals. The items below are research plans, not implemented classifiers or established explanations.
 
 The first 2D field editor now provides paused selection, copy, rotation, placement, shaped random patches, undo and saved construction history. Constructed pairs can be compared at controlled separations and orientations while retaining their original gallery entries. Revolving a 2D pattern around a chosen movement axis into a 3D field is a later extension: its axis, interpolation, spatial scale and 3D model parameters need explicit choices. That construction supplies an initial condition, without assuming the 2D dynamics or organism will survive in 3D.
 

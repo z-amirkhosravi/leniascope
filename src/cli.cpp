@@ -41,10 +41,33 @@ int main(int argc, char **argv) {
                    "    --values 0.14,0.15,0.16 [--steps 1000] [--sample-every 100] [--threshold 0.01]\n"
                    "    [--backend cpu|gpu|cuda] [--seeds 3 --first-seed 1]\n"
                    "    --seeds regenerates the saved recipe; otherwise replays the exact saved field.\n"
+                   "shape checkpoint.lenia [--threshold 0.01] (periodic components / winding, CSV stdout)\n"
                    "GPU uses float32; CPU uses float64. Sweep outputs append .run-N.\n";
             return 0;
         }
         std::string command = argv[1];
+        if (command == "shape") {
+            if (argc != 3 && (argc != 5 || std::string(argv[3]) != "--threshold"))
+                throw std::invalid_argument("shape needs a checkpoint and optional --threshold value");
+            double threshold = .01;
+            if (argc == 5) {
+                size_t end = 0;
+                threshold = std::stod(argv[4], &end);
+                if (end != std::string(argv[4]).size())
+                    throw std::invalid_argument("Invalid shape threshold");
+            }
+            auto input = std::filesystem::u8path(argv[2]);
+            auto hash = file_checksum(input);
+            auto source = load_state(argv[2]);
+            if (file_checksum(input) != hash)
+                throw std::runtime_error("Shape input changed while loading");
+            auto shape = measure_morphology(source, threshold);
+            std::cout << "width,height,depth,threshold,source_hash," << morphology_csv_header() << '\n'
+                      << std::setprecision(17) << source.config.width << ',' << source.config.height << ','
+                      << source.config.depth << ',' << threshold << ',' << hash << ','
+                      << morphology_csv(shape) << '\n';
+            return 0;
+        }
         if (command == "batch") {
             if (argc < 3)
                 throw std::invalid_argument("batch needs a checkpoint path");

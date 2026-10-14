@@ -66,10 +66,11 @@ def exercise(root):
             studies = [p for p in (entry / 'studies').iterdir() if not p.name.startswith('.')]
             assert len(studies) == 1
             report = (studies[0] / 'report.txt').read_text()
-            assert report.startswith('LeniascopeBehavior 1\n') and entry.name in report
+            assert report.startswith('LeniascopeBehavior 2\n') and entry.name in report
             rows = list(csv.DictReader((studies[0] / 'samples.csv').open()))
             assert [int(row['step']) for row in rows] == [0, 3, 6, 7]
             assert float(rows[0]['raw_rms']) == 0 and float(rows[0]['aligned_rms']) == 0
+            assert all(r['components'] != '' and r['active_cells'] != '' for r in rows)
             batches = list((entry / 'batches').iterdir())
             assert len(batches) == 1
             batch = batches[0]
@@ -80,6 +81,7 @@ def exercise(root):
             assert batch_rows[0]['label'] == 'smoke assessment'
             for i, row in enumerate(batch_rows):
                 assert row['status'] == 'complete' and row['steps'] == '5' and row['seed'] == '216'
+                assert row['components'] != '' and row['winding_components'] != ''
                 run = batch / f'run-{i+1:04d}'
                 for kind in ['initial', 'final']:
                     assert checksum((run / f'{kind}.lenia').read_bytes()) == int(row[f'{kind}_hash'])

@@ -82,6 +82,7 @@ void GalleryPanel::select(std::string id) {
     selected.reset();
     image.Reset();
     studies = {};
+    shape.reset();
     batches.clear();
     batch_index = batch_run = 0;
     batch_label[0] = 0;
@@ -346,6 +347,36 @@ void GalleryPanel::draw_study(float dpi, bool closing) {
     ImGui::TextWrapped("Shift is modulo the grid, for the whole field. Low mismatch is a sampled return, not "
                        "proof of periodicity or stability. Integer-cell alignment can itself produce "
                        "oscillations as a shape moves between cells. No individual organism is tracked.");
+    if (ImGui::CollapsingHeader("Connected components and periodic loops")) {
+        draw_shape_summary(last.morphology, r.config, r.options.activity_threshold);
+        if (last.morphology) {
+            std::vector<float> counts;
+            uint64_t maximum = 1;
+            for (const auto &sample : r.samples) {
+                counts.push_back(float(sample.morphology->components));
+                maximum = std::max(maximum, sample.morphology->components);
+            }
+            char scale[96];
+            std::snprintf(scale, sizeof scale, "Components: 0 to %llu",
+                          static_cast<unsigned long long>(maximum));
+            ImGui::PlotLines("##components", counts.data(), int(counts.size()), 0, scale, 0, float(maximum),
+                             {-1, 75 * dpi});
+            if (ImGui::IsItemHovered()) {
+                float padding = ImGui::GetStyle().FramePadding.x;
+                float fraction = (ImGui::GetMousePos().x - ImGui::GetItemRectMin().x - padding) /
+                                 std::max(1.f, ImGui::GetItemRectSize().x - 2 * padding);
+                int i =
+                    std::clamp(int(std::round(fraction * (counts.size() - 1))), 0, int(counts.size()) - 1);
+                const auto &sample = r.samples[i];
+                ImGui::SetTooltip(
+                    "Step %d / lag %.6g\nComponents %llu; with periodic loops %llu\nLoop directions: %s",
+                    sample.step, sample.elapsed,
+                    static_cast<unsigned long long>(sample.morphology->components),
+                    static_cast<unsigned long long>(sample.morphology->winding_components),
+                    winding_axes_text(sample.morphology->winding_axes).c_str());
+            }
+        }
+    }
     if (ImGui::Button("Open report folder")) {
         auto path = root / selected->id / "studies" / saved.id;
         if (reinterpret_cast<INT_PTR>(
@@ -389,6 +420,12 @@ void GalleryPanel::tick(Runner &runner, std::array<ViewSettings, 2> &views) {
             }
             if (result.entry)
                 selected = std::move(result.entry);
+            if (completed == Job::Save)
+                shape.reset();
+            if (result.shape) {
+                shape = result.shape;
+                message = "Measured saved field; no evolution was run.";
+            }
             if ((completed == Job::Select || completed == Job::Save) && selected) {
                 if (completed == Job::Save) {
                     studies = {};
@@ -675,8 +712,14 @@ void GalleryPanel::draw(Runner &runner, const std::array<ViewSettings, 2> &views
                     draw_study(dpi, closing);
                     ImGui::EndTabItem();
                 }
+                if (ImGui::BeginTabItem("Shape", nullptr,
+                                        smoke_phase >= 17 ? ImGuiTabItemFlags_SetSelected : 0)) {
+                    draw_shape(dpi, closing);
+                    ImGui::EndTabItem();
+                }
                 if (ImGui::BeginTabItem("Batches", nullptr,
-                                        smoke_phase >= 9 ? ImGuiTabItemFlags_SetSelected : 0)) {
+                                        smoke_phase >= 9 && smoke_phase < 17 ? ImGuiTabItemFlags_SetSelected
+                                                                             : 0)) {
                     draw_batch(dpi, closing);
                     ImGui::EndTabItem();
                 }
@@ -806,6 +849,14 @@ bool GalleryPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &view
         if (signature(smoke_check.get()) != smoke_signature)
             throw std::runtime_error("Could not return to gallery source after batch inspection");
         opened = true;
+        begin_shape();
+        ++smoke_phase;
+        break;
+    case 17:
+        if (!shape || !studies.entries[0].report.samples.front().morphology ||
+            morphology_csv(shape->shape) !=
+                morphology_csv(studies.entries[0].report.samples.front().morphology))
+            throw std::runtime_error("Saved shape measurements disagree with the initial study sample");
         ++smoke_phase;
         return true;
     default:

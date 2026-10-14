@@ -16,6 +16,7 @@ using namespace lenia;
 void workspace_tests();
 void gallery_tests(bool cpu_only);
 void behavior_tests();
+void morphology_tests();
 void batch_tests(bool cpu_only);
 void field_edit_tests();
 void numerical_tests(bool cpu_only);
@@ -74,6 +75,7 @@ int main(int argc, char **argv) {
         workspace_tests();
         gallery_tests(cpu_only);
         behavior_tests();
+        morphology_tests();
         batch_tests(cpu_only);
         field_edit_tests();
         numerical_tests(cpu_only);

@@ -37,10 +37,12 @@
     <ClCompile Include="core_tests.cpp" />
     <ClCompile Include="gallery_tests.cpp" />
     <ClCompile Include="behavior_tests.cpp" />
+    <ClCompile Include="morphology_tests.cpp" />
     <ClCompile Include="batch_tests.cpp" />
     <ClCompile Include="field_edit_tests.cpp" />
     <ClCompile Include="..\src\field_edit.cpp" />
     <ClCompile Include="..\src\behavior.cpp" />
+    <ClCompile Include="..\src\morphology.cpp" />
     <ClCompile Include="..\src\batch.cpp" />
     <ClCompile Include="..\src\gallery.cpp" />
     <ClCompile Include="seed_tests.cpp" />

@@ -143,7 +143,7 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
         assert abs(float(rows[-1]['elapsed']) - .7) < 1e-14
         assert stdout == (report_dir / 'samples.csv').read_text()
         metadata = (report_dir / 'report.txt').read_text()
-        assert metadata.startswith('LeniascopeBehavior 1\n') and custom.name in metadata
+        assert metadata.startswith('LeniascopeBehavior 2\n') and custom.name in metadata
         assert custom.read_bytes() == custom_data
         run('study', arg_path(custom), '--output', arg_path(report_dir), succeeds=False)
         assert (report_dir / 'report.txt').read_text() == metadata
@@ -153,6 +153,24 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
         run('study', arg_path(custom), '--output', arg_path(destination), *args, succeeds=False)
         assert not destination.exists()
     print('PASS behavior CLI sampling, backend provenance, source preservation and output validation')
+    # Construct a known 3D mask, independent of the numerical initialization and analysis code.
+    shape_file = root / 'shape.lenia'
+    values = [0.] * (16**3)
+    values[0] = values[15] = 1.
+    values[(5*16+5)*16+5] = .5
+    shape_file.write_bytes(data[:-8*16**3] + struct.pack('<4096d', *values))
+    measured = next(csv.DictReader(io.StringIO(run('shape', arg_path(shape_file)))))
+    assert [int(measured[k]) for k in ('active_cells','components','largest_component_cells','winding_components')] == [3,2,2,0]
+    assert float(measured['largest_active_fraction']) == 2/3
+    higher = next(csv.DictReader(io.StringIO(run('shape', arg_path(shape_file), '--threshold', .5))))
+    assert higher['active_cells'] == '2' and higher['components'] == '1'
+    values = [float(i < 16) for i in range(16**3)]
+    shape_file.write_bytes(data[:-8*16**3] + struct.pack('<4096d', *values))
+    loop = next(csv.DictReader(io.StringIO(run('shape', arg_path(shape_file)))))
+    assert [int(loop[k]) for k in ('active_cells','components','winding_components','winding_x','winding_y','winding_z')] == [16,1,1,1,0,0]
+    for extra in [('--threshold','nan'), ('--threshold','2'), ('--threshold','0.1junk'), ('--unknown','1')]:
+        run('shape', arg_path(shape_file), *extra, succeeds=False)
+    print('PASS shape CLI seam connectivity, true periodic loops and threshold semantics')
     for backend in ['cpu'] + (['gpu', 'cuda'] if '--cuda' in sys.argv[2:] else []):
         destination = root / f'batch-{backend}'
         stdout = run('batch', arg_path(custom), '--parameter', 'mu', '--values', '.14,.16',
@@ -167,6 +185,10 @@ with tempfile.TemporaryDirectory(prefix='leniascope-cli-') as tmp:
             run('run', '--input', arg_path(custom), '--mu', mu, '--steps', 5, '--backend', backend,
                 '--output', arg_path(control))
             assert control.read_bytes() == (destination / f'run-{i+1:04d}' / 'final.lenia').read_bytes()
+            measured = next(csv.DictReader(io.StringIO(run('shape', arg_path(control)))))
+            for key in ('active_cells','components','largest_component_cells','largest_active_fraction',
+                        'winding_components','winding_x','winding_y','winding_z'):
+                assert rows[i][key] == measured[key], f'Batch shape mismatch: {backend} {key}'
         run('batch', arg_path(custom), '--parameter', 'mu', '--values', '.14,.16',
             '--output', arg_path(destination), succeeds=False)
         assert stdout == (destination / 'summary.csv').read_text()

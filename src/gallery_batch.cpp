@@ -204,7 +204,7 @@ void GalleryPanel::draw_batch(float dpi, bool closing) {
     if (ImGui::BeginTable("Batch results", 6,
                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
                           {0, 175 * dpi})) {
-        for (const char *title : {"Run", "Value", "Seed", "Mean", "Active %", "Status / label"})
+        for (const char *title : {"Run", "Value", "Seed", "Parts", "Active %", "Status / label"})
             ImGui::TableSetupColumn(title);
         ImGui::TableHeadersRow();
         for (const auto &run : r.runs) {
@@ -220,7 +220,11 @@ void GalleryPanel::draw_batch(float dpi, bool closing) {
             ImGui::TableNextColumn();
             ImGui::Text("%llu", static_cast<unsigned long long>(run.report.seed));
             ImGui::TableNextColumn();
-            ImGui::Text("%.5g", run.report.samples.back().mean);
+            if (run.report.samples.back().morphology)
+                ImGui::Text("%llu", static_cast<unsigned long long>(
+                                        run.report.samples.back().morphology->components));
+            else
+                ImGui::TextDisabled("--");
             ImGui::TableNextColumn();
             ImGui::Text("%.3f", 100 * run.report.samples.back().active_fraction);
             ImGui::TableNextColumn();
@@ -234,6 +238,10 @@ void GalleryPanel::draw_batch(float dpi, bool closing) {
         const auto &report = r.runs[batch_run].report;
         ImGui::Text("Run %d: %d steps, elapsed %.6g; rounding RMS %.6g", batch_run + 1,
                     report.completed_steps, report.samples.back().elapsed, report.initial_rounding_rms);
+        ImGui::Text("Mean activity: %.6g", report.samples.back().mean);
+        if (ImGui::CollapsingHeader("Final shape measurements"))
+            draw_shape_summary(report.samples.back().morphology, report.config,
+                               report.options.activity_threshold);
         if (ImGui::Button("Load initial field"))
             batch_field(false);
         ImGui::SameLine();

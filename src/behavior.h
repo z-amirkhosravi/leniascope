@@ -1,4 +1,5 @@
 #pragma once
+#include "morphology.h"
 #include "simulation.h"
 #include <functional>
 
@@ -14,6 +15,7 @@ struct BehaviorSample {
     double raw_rms = 0, aligned_rms = 0, relative_rms = 0;
     int dx = 0, dy = 0, dz = 0;
     bool shift_valid = false;
+    std::optional<Morphology> morphology; // Missing in schema-1 reports; never treat missing as zero.
 };
 struct BehaviorReport {
     Config config;

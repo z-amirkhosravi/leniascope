@@ -53,6 +53,7 @@ void StudyPanel::batch_field(bool final) {
     auto path = root / selected->id / "batches" / batches.at(batch_index).id;
     restore_view = selected->view;
     restore_mode = selected->state.config.depth > 1;
+    attach_restore = false;
     job = Job::Load;
     work = std::async(std::launch::async, [path, index = batch_run, final] {
         Result r;
@@ -72,20 +73,21 @@ void StudyPanel::batch_annotation() {
                           return r;
                       });
 }
-void StudyPanel::draw_batch(float dpi, bool closing) {
+void StudyPanel::draw_batch(Runner &runner, const std::array<ViewSettings, 2> &views, const State &current,
+                            float dpi, bool closing) {
     ImGui::SetNextItemOpen(batch_settings_open);
     batch_settings_open = ImGui::CollapsingHeader("Batch settings");
     if (batch_settings_open) {
         ImGui::BeginDisabled(busy() || closing || !writable || bool(pending_study));
-        ImGui::BeginDisabled(!selected->state.initialization);
+        ImGui::BeginDisabled(!current.initialization && !batch_plan.reseed);
         if (ImGui::Checkbox("Use seed recipe", &batch_plan.reseed))
             batch_plan.repetitions = batch_plan.reseed ? 3 : 1;
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(!selected->state.initialization
-                                  ? "This snapshot has no seed recipe."
+            ImGui::SetTooltip(!current.initialization
+                                  ? "This field has no seed recipe."
                                   : "Regenerate seeds from the recipe for each parameter value.\n"
-                                    "When unchecked, every run starts from the exact saved field.");
+                                    "When unchecked, every run starts from the current field.");
         if (batch_plan.reseed) {
             ImGui::TextUnformatted("Seeds per value");
             ImGui::SetNextItemWidth(-1);
@@ -102,7 +104,7 @@ void StudyPanel::draw_batch(float dpi, bool closing) {
                          "Growth mean (mu)\0Growth width (sigma)\0Kernel radius\0"
                          "Pair separation / cluster radius (R)\0Pair angle (degrees)\0")) {
             batch_plan.axis = BatchAxis(axis);
-            const auto &c = selected->state.config;
+            const auto &c = current.config;
             if (axis == 2)
                 std::snprintf(batch_value_text, sizeof batch_value_text, "%d, %d, %d", c.radius - 1, c.radius,
                               c.radius + 1);
@@ -140,21 +142,20 @@ void StudyPanel::draw_batch(float dpi, bool closing) {
         std::string error;
         try {
             batch_plan.values = batch_values(batch_value_text);
-            batch_plan.validate(selected->state);
+            batch_plan.validate(current);
         } catch (const std::exception &e) {
             error = e.what();
         }
         if (error.empty()) {
-            double mib = double(selected->state.config.count()) * 8 * (2 * batch_plan.count() + 1) / 1048576;
+            double mib = double(current.config.count()) * 8 * (2 * batch_plan.count() + 1) / 1048576;
             ImGui::TextWrapped("%d runs; duration %.6g each; approximately %.1f MiB for saved fields.",
-                               batch_plan.count(), batch_plan.observation.steps * selected->state.config.dt,
-                               mib);
+                               batch_plan.count(), batch_plan.observation.steps * current.config.dt, mib);
         } else
             ImGui::TextWrapped("%s", error.c_str());
         ImGui::BeginDisabled(!error.empty());
         if (ImGui::Button("Run batch")) {
             try {
-                begin_batch();
+                request(Job::Batch, runner, views);
             } catch (const std::exception &e) {
                 message = e.what();
             }

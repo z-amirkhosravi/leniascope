@@ -111,6 +111,7 @@ void Runner::step() {
         running = false;
         // Execute in command order, before a following mode switch, reset, or save.
         sessions[volume]->step();
+        ++field_revision;
         publish();
     });
 }
@@ -123,6 +124,7 @@ void Runner::randomize_now(Config c, uint64_t seed, SeedSettings settings) {
     reset_states[volume].reset();
     ++initialization_revision[volume];
     ++generation;
+    ++field_revision;
     set_message("Initialized from reproducible seed " + std::to_string(seed));
 }
 void Runner::randomize(Config c, uint64_t seed, SeedSettings settings) {
@@ -148,6 +150,7 @@ void Runner::reset(uint64_t seed, SeedSettings settings) {
 void Runner::parameters(Config c) {
     enqueue([this, c] {
         sessions[volume]->parameters(c);
+        ++field_revision;
         set_message("Parameters applied at a step boundary");
     });
 }
@@ -164,6 +167,7 @@ void Runner::mode(bool v) {
         publish(); // Preserve preceding parameter/step commands before leaving this session.
         volume = v;
         ++generation;
+        ++field_revision;
         set_message("Restored independent simulation session");
     });
 }
@@ -185,6 +189,7 @@ void Runner::backend(bool gpu, bool cuda) {
             sessions[i] = std::move(next[i]);
         use_gpu = gpu;
         use_cuda = cuda;
+        ++field_revision;
         if (sessions[!volume])
             publish(!volume);
         set_message(cuda ? "CUDA / cuFFT float solver active"
@@ -225,6 +230,21 @@ std::future<State> Runner::capture_current() {
     });
     return future;
 }
+std::future<FieldCapture> Runner::capture_field() {
+    auto promise = std::make_shared<std::promise<FieldCapture>>();
+    auto future = promise->get_future();
+    enqueue([this, promise] {
+        running = false;
+        try {
+            FieldCapture capture{sessions[volume]->snapshot(), field_revision};
+            publish();
+            promise->set_value(std::move(capture));
+        } catch (...) {
+            promise->set_exception(std::current_exception());
+        }
+    });
+    return future;
+}
 bool Runner::install(State state, bool remember_initial) {
     bool v = state.config.depth > 1;
     auto initial = remember_initial ? std::make_shared<const State>(state) : reset_states[v];
@@ -246,6 +266,7 @@ bool Runner::install(State state, bool remember_initial) {
     ++initialization_revision[v];
     volume = v;
     ++generation;
+    ++field_revision;
     publish();
     return needs_double;
 }
@@ -259,6 +280,22 @@ std::future<void> Runner::restore(State state) {
             set_message(needs_double ? "Restored field exactly; CPU selected to preserve float64 values"
                                      : "Restored initial field; paused");
             promise->set_value();
+        } catch (...) {
+            promise->set_exception(std::current_exception());
+        }
+    });
+    return future;
+}
+std::future<uint64_t> Runner::restore_field(State state) {
+    auto promise = std::make_shared<std::promise<uint64_t>>();
+    auto future = promise->get_future();
+    enqueue([this, promise, state = std::move(state)]() mutable {
+        running = false;
+        try {
+            bool needs_double = install(std::move(state), true);
+            set_message(needs_double ? "Restored field exactly; CPU selected to preserve float64 values"
+                                     : "Restored initial field; paused");
+            promise->set_value(field_revision);
         } catch (...) {
             promise->set_exception(std::current_exception());
         }
@@ -318,6 +355,7 @@ void Runner::publish(int index) {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     f->serial = ++serial;
     f->generation = generation;
+    f->field_revision = field_revision;
     f->initialization_revision = initialization_revision[index];
     f->running = running && index == int(volume);
     f->gpu = use_gpu;
@@ -435,6 +473,7 @@ void Runner::loop(SessionStates initial) {
             if (running && now >= deadline) {
                 last_step_start = now;
                 sessions[volume]->step();
+                ++field_revision;
                 ++interval_steps;
                 advanced = true;
                 // Anchor pacing to the schedule, rather than accumulating the wait's overshoot.

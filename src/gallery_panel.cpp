@@ -347,11 +347,13 @@ void GalleryPanel::draw(Runner &runner, const std::array<ViewSettings, 2> &views
                                   "required to preserve saved float64 values exactly. The other simulation "
                                   "session is retained.");
             ImGui::BeginDisabled(!study.can_change_source());
-            if (ImGui::Button("Study this pattern")) {
+            if (ImGui::Button("Load and study")) {
                 study.open_source(root, e.id);
                 opened = false;
                 ImGui::CloseCurrentPopup();
             }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("Load this pattern into the current workspace and open Study.");
             ImGui::EndDisabled();
             if (ImGui::GetContentRegionAvail().x > 380 * dpi)
                 ImGui::SameLine();

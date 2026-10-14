@@ -48,7 +48,8 @@ void StudyPanel::save_study() {
         return r;
     });
 }
-void StudyPanel::draw_study(float dpi, bool closing) {
+void StudyPanel::draw_study(Runner &runner, const std::array<ViewSettings, 2> &views, const State &current,
+                            float dpi, bool closing) {
     ImGui::SetNextItemOpen(study_settings_open);
     study_settings_open = ImGui::CollapsingHeader("Study settings");
     if (study_settings_open) {
@@ -80,21 +81,21 @@ void StudyPanel::draw_study(float dpi, bool closing) {
             error = e.what();
         }
         if (error.empty())
-            ImGui::TextWrapped(
-                "Duration %.6g; %d measured lags", study_options.steps * selected->state.config.dt,
-                (study_options.steps + study_options.sample_every - 1) / study_options.sample_every);
+            ImGui::TextWrapped("Duration %.6g; %d measured lags", study_options.steps * current.config.dt,
+                               (study_options.steps + study_options.sample_every - 1) /
+                                   study_options.sample_every);
         else
             ImGui::TextWrapped("%s", error.c_str());
         ImGui::BeginDisabled(!error.empty());
         if (ImGui::Button("Run study")) {
             try {
-                begin_study();
+                request(Job::Study, runner, views);
             } catch (const std::exception &e) {
                 message = e.what();
             }
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-            ImGui::SetTooltip("Evolve and measure a separate copy of this snapshot.");
+            ImGui::SetTooltip("Pause here and evolve a separate copy of the current field.");
         ImGui::EndDisabled();
         ImGui::EndDisabled();
     }

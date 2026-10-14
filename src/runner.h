@@ -15,9 +15,13 @@ struct Frame {
     double publication_ms = 0;
     Timings timings;
     Measures measures;
-    uint64_t serial = 0, generation = 0, initialization_revision = 0;
+    uint64_t serial = 0, generation = 0, initialization_revision = 0, field_revision = 0;
     bool running = false, gpu = false, cuda = false, has_initial_field = false;
     double steps_per_second = 0;
+};
+struct FieldCapture {
+    State state;
+    uint64_t revision = 0;
 };
 class Runner {
   public:
@@ -43,7 +47,10 @@ class Runner {
     void save(std::string);
     void load(std::string);
     std::future<State> capture_current();
+    // Pause at a step boundary and identify the exact field used by an analysis operation.
+    std::future<FieldCapture> capture_field();
     std::future<void> restore(State);
+    std::future<uint64_t> restore_field(State);
     std::future<SessionSnapshot> snapshot_sessions();
     std::future<SessionSnapshot> pause_and_snapshot();
 
@@ -74,6 +81,6 @@ class Runner {
     uint64_t initialization_revision[2]{};
     bool volume = true, use_gpu = false, use_cuda = false, running = false;
     double target_rate = 60, measured_rate = 0;
-    uint64_t serial = 0, generation = 0;
+    uint64_t serial = 0, generation = 0, field_revision = 0;
 };
 } // namespace lenia

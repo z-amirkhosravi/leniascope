@@ -31,7 +31,7 @@ const char *StudyPanel::smoke_capture_name() const {
 bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views) {
     if (busy())
         return false;
-    if (!selected)
+    if (!selected && smoke_phase != 18 && smoke_phase != 5)
         throw std::runtime_error("Study smoke has no source: " + message);
     if (!smoke_phase) {
         smoke_signature = signature(load_gallery_state(root, selected->id));
@@ -44,6 +44,8 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
         << GetTickCount64() << " study phase " << smoke_phase << " direct=" << smoke_current << '\n';
     // Let the actual Results tab settle before capturing its layout, for both source types.
     if (smoke_phase == 6 || smoke_phase == 9 || smoke_phase == 19) {
+        if (smoke_wait == 0)
+            requested_presentation = smoke_phase == 6 ? 1 : smoke_phase == 9 ? 2 : 0;
         if (smoke_wait++ < 5)
             return false;
         smoke_wait = 0;
@@ -52,7 +54,7 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
     case 5:
         study_options = {7, 3, .01};
         tool = 1;
-        begin_study();
+        request(Job::Study, runner, views);
         ++smoke_phase;
         break;
     case 6:
@@ -81,7 +83,7 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
         std::snprintf(batch_value_text, sizeof batch_value_text, "%s",
                       batch_plan.reseed ? "0.8, 1.5" : "0.14, 0.16");
         tool = 2;
-        begin_batch();
+        request(Job::Batch, runner, views);
         ++smoke_phase;
         break;
     case 9:
@@ -127,9 +129,7 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
         if (signature(smoke_check.get()) != smoke_signature)
             throw std::runtime_error("Could not return to gallery source after batch inspection");
         tool = 0;
-        viewing_source = true;
-        activate = true;
-        begin_shape();
+        request(Job::Shape, runner, views);
         ++smoke_phase;
         break;
     case 17:
@@ -139,30 +139,25 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
             throw std::runtime_error("Saved shape measurements disagree with the initial study sample");
         if (shape->components.size() != shape->shape.components || !shape->renderer)
             throw std::runtime_error("Shape component preview is incomplete");
-        shape->renderer->draw_components(shape_view, 320, 240);
+        shape->renderer->draw_components(views[shape->config.depth > 1], 320, 240);
         shape->renderer->export_bmp((root.parent_path() / "shape-components.bmp").u8string());
         if (!shape->order.empty()) {
-            shape->renderer->draw_components(shape_view, 320, 240, shape->order.front());
+            shape->renderer->draw_components(views[shape->config.depth > 1], 320, 240, shape->order.front());
             shape->renderer->export_bmp((root.parent_path() / "shape-largest.bmp").u8string());
         }
         if (!smoke_current) {
             smoke_current = true;
-            use_current(runner, views);
+            selected.reset();
+            source_revision.reset();
             smoke_phase = 18;
             break;
         }
-        viewer_ui.controls_open = true; // Include the floating inspector in the final UI capture.
-        show_current();
         smoke_phase = 19;
         break;
     case 19:
-        viewing_source = true;
         ++smoke_phase;
         return true;
     case 18:
-        if (root != archive_root || !selected ||
-            signature(load_gallery_state(root, selected->id)) != smoke_signature)
-            throw std::runtime_error("Direct study capture changed the source");
         smoke_phase = 5;
         break;
     default:

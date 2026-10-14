@@ -63,11 +63,11 @@ def exercise(root):
             assert text.startswith('LeniascopeGallery 2\n') and 'Smoke reference' in text and 'test, periodic' in text
             bmp = (entry / 'preview.bmp').read_bytes()
             assert bmp[:2] == b'BM' and len(bmp) == 54 + 384*288*4
-            snapshots = [p for p in (profile / 'studies').iterdir() if not p.name.startswith('.')]
-            assert len(snapshots) == 1, 'Direct study must keep its own source outside the gallery'
-            assert (snapshots[0] / 'state.lenia').read_bytes() == original[active]
+            inputs = [p for p in (profile / 'studies').iterdir() if not p.name.startswith('.')]
+            assert len(inputs) == 1, 'Current-field study inputs must be retained with reports, outside the gallery'
+            assert (inputs[0] / 'state.lenia').read_bytes() == original[active]
             assert len(list((profile / 'gallery').iterdir())) == 1, 'Direct study polluted the gallery'
-            for source in (entry, snapshots[0]):
+            for source in (entry, inputs[0]):
                 studies = [p for p in (source / 'studies').iterdir() if not p.name.startswith('.')]
                 assert len(studies) == 1
                 report = (studies[0] / 'report.txt').read_text()

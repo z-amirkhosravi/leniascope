@@ -6,20 +6,22 @@
 #include <numeric>
 
 namespace lenia {
-void StudyPanel::begin_shape() {
-    if (!selected || busy() || pending_study)
+void StudyPanel::begin_shape(FieldCapture capture) {
+    if (busy() || pending_study)
         return;
     if (!std::isfinite(shape_threshold) || shape_threshold < 0 || shape_threshold > 1)
         throw std::invalid_argument("Shape threshold must be in [0,1]");
     message.clear();
     job = Job::Shape;
     work = std::async(std::launch::async,
-                      [path = root, id = selected->id, threshold = shape_threshold, context = gpu] {
-                          auto source = load_gallery_state(path, id);
+                      [input = std::move(capture), threshold = shape_threshold, context = gpu] {
+                          const auto &source = input.state;
                           auto map = label_components(source, threshold);
                           Result r;
                           auto &m = r.shape.emplace();
                           m.shape = map.summary;
+                          m.config = source.config;
+                          m.revision = input.revision;
                           m.threshold = threshold;
                           m.components = std::move(map.components);
                           m.order.resize(m.components.size());
@@ -57,10 +59,9 @@ void StudyPanel::draw_shape_summary(const std::optional<Morphology> &shape, cons
     ImGui::Text("Loop directions: %s", winding_axes_text(m.winding_axes).c_str());
     ImGui::Text("Connectivity: %d face neighbors per cell", config.depth > 1 ? 6 : 4);
 }
-void StudyPanel::draw_components(float dpi) {
+void StudyPanel::draw_components(float dpi, const ViewSettings &v) {
     auto &m = *shape;
-    const auto &c = selected->state.config;
-    auto &v = shape_view;
+    const auto &c = m.config;
     ImGui::TextWrapped("Components: %llu   Measured threshold: %.6g",
                        static_cast<unsigned long long>(m.shape.components), m.threshold);
     if (shape_threshold != m.threshold)
@@ -71,7 +72,7 @@ void StudyPanel::draw_components(float dpi) {
     }
     ImGui::Checkbox("Scalar field", &shape_scalar);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-        ImGui::SetTooltip("Show all saved values with interpolated color, without component isolation.");
+        ImGui::SetTooltip("Show the scalar field without component isolation.");
     if (shape_scalar) {
         if (c.depth > 1 && v.view != 0)
             ImGui::Text("Display threshold: %.6g", m.threshold);
@@ -125,7 +126,8 @@ void StudyPanel::draw_components(float dpi) {
         ImGui::EndTable();
     }
 }
-void StudyPanel::draw_shape(float dpi, bool closing) {
+void StudyPanel::draw_shape(Runner &runner, const std::array<ViewSettings, 2> &views, float dpi,
+                            bool closing) {
     ImGui::BeginDisabled(busy() || closing || bool(pending_study));
     ImGui::SetNextItemWidth(110 * dpi);
     ImGui::InputDouble("Shape threshold", &shape_threshold, 0, 0, "%.6g");
@@ -137,20 +139,18 @@ void StudyPanel::draw_shape(float dpi, bool closing) {
         ImGui::SameLine();
     if (ImGui::Button("Measure shape")) {
         try {
-            begin_shape();
+            request(Job::Shape, runner, views);
         } catch (const std::exception &e) {
             message = e.what();
         }
     }
     ImGui::EndDisabled();
     ImGui::EndDisabled();
-    if (job == Job::Shape)
-        ImGui::TextDisabled("Measuring source...");
-    if (shape) {
+    if (showing_components(runner.frame().get())) {
         ImGui::Separator();
-        draw_components(dpi);
+        draw_components(dpi, views[shape->config.depth > 1]);
         if (ImGui::CollapsingHeader("Measurement details"))
-            draw_shape_summary(shape->shape, selected->state.config, shape->threshold);
+            draw_shape_summary(shape->shape, shape->config, shape->threshold);
     }
 }
 } // namespace lenia

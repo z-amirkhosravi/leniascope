@@ -69,8 +69,12 @@ void study_ui_tests() {
     io.Fonts->Build();
     int tab = 0;
     ImVec2 tab_origin, controls_origin, canvas_min, canvas_max;
+    std::string controls;
     auto frame = [&] {
         study.tick(runner, views);
+        auto current = runner.frame();
+        if (current)
+            live.upload(current->state);
         ImGui::NewFrame();
         ImGui::SetNextWindowPos({0, 0});
         ImGui::SetNextWindowSize(io.DisplaySize);
@@ -81,22 +85,16 @@ void study_ui_tests() {
         tab_origin = ImGui::GetCursorScreenPos();
         draw_inspector_tabs(tab);
         controls_origin = ImGui::GetCursorScreenPos();
+        ImGui::LogToBuffer(0);
         if (tab == 1)
             study.draw_controls(runner, views, 1, false);
-        else if (study.showing_source())
-            study.draw_simulation_actions(false);
+        controls = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
         ImGui::EndChild();
         ImGui::SameLine();
         ImGui::BeginChild("Scene", {0, 700}, ImGuiChildFlags_Borders);
-        if (study.showing_source())
-            study.draw_scene(1, false);
-        else {
-            ImGui::TextUnformatted("Current simulation");
-            ImGui::TextUnformatted("3D LENIA   8 x 8 x 8");
-            auto size = ImGui::GetContentRegionAvail();
-            size.y -= 118;
-            draw_viewer("Simulation", live, original.config, views[1], viewer, size, 1);
-        }
+        study.draw_scene(live, current.get(), current ? current->state.config : original.config,
+                         views[current && current->state.config.depth > 1], viewer, 1, false);
         canvas_min = ImGui::GetItemRectMin();
         canvas_max = ImGui::GetItemRectMax();
         ImGui::EndChild();
@@ -122,77 +120,130 @@ void study_ui_tests() {
         frame();
         frame();
     };
-    auto primary = [&] {
-        click({controls_origin.x + 100,
-               controls_origin.y + ImGui::GetFrameHeightWithSpacing() + ImGui::GetFrameHeight() * .5f});
+    auto measure = [&] {
+        click({controls_origin.x + 60, controls_origin.y + 2 * ImGui::GetFrameHeightWithSpacing() + 1 +
+                                           ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeight() * .5f});
+        until([&] { return !study.busy(); });
+        require(study.showing_components(runner.frame().get()),
+                "Measure shape did not measure the current field");
+    };
+    auto choose_tool = [&](int index) {
+        click({controls_origin.x + 80, controls_origin.y + 9});
+        require(GImGui->OpenPopupStack.Size == 1, "Study tool selector did not open");
+        auto *popup = GImGui->OpenPopupStack[0].Window;
+        click({popup->Pos.x + 80, popup->Pos.y + ImGui::GetStyle().WindowPadding.y +
+                                      (index + .5f) * ImGui::GetTextLineHeightWithSpacing()});
     };
     frame();
-    until([&] { return !study.busy() && runner.frame(); });
+    until([&] { return runner.frame() != nullptr; });
     const auto original_min = canvas_min, original_max = canvas_max;
     auto before_pixels = live.capture_bmp();
-    // Real tab clicks must leave the right pane, camera and paused/running state alone.
     click({tab_origin.x + 110, tab_origin.y + 9});
-    require(tab == 1 && !study.showing_source(), "Study tab replaced the current field");
+    require(tab == 1 && controls.find("Measure shape") != std::string::npos,
+            "Study tools require a preparatory action");
+    require(controls.find("Take snapshot") == std::string::npos &&
+                controls.find("Load into Simulation") == std::string::npos &&
+                controls.find("Saved snapshots") == std::string::npos,
+            "A second workspace is exposed in Study");
     require(live.capture_bmp() == before_pixels && canvas_min.x == original_min.x &&
                 canvas_min.y == original_min.y && canvas_max.x == original_max.x &&
                 canvas_max.y == original_max.y && views[1].yaw == -.8f,
             "Panel switch changed the image, camera or viewer size");
-    primary();
-    require(!study.busy() && list_gallery(directory / "studies").entries.empty(),
-            "Disabled snapshot control wrote into a locked workspace");
+    choose_tool(1);
+    require(controls.find("Run study") != std::string::npos,
+            "Behavior tools are hidden without a saved source");
+    choose_tool(2);
+    require(controls.find("Run batch") != std::string::npos, "Batch tools are hidden without a saved source");
+    choose_tool(0);
+    // Shape inspection is in-memory, even with another window owning workspace writes.
+    measure();
+    require(!fs::exists(directory / "studies") && !fs::exists(directory / "gallery"),
+            "Measuring a shape unexpectedly saved a pattern or snapshot");
+    same_field(runner.capture_current().get(), original, "Shape measurement changed the field");
+    require(canvas_min.x == original_min.x && canvas_min.y == original_min.y &&
+                canvas_max.x == original_max.x && canvas_max.y == original_max.y,
+            "Measuring the current field moved its viewport");
+    views[1].yaw = .4f;
+    click({tab_origin.x + 35, tab_origin.y + 9});
+    require(tab == 0 && study.showing_components(runner.frame().get()) && views[1].yaw == .4f,
+            "Simulation tab replaced the measured workspace or camera");
+    click({tab_origin.x + 110, tab_origin.y + 9});
+    require(study.showing_components(runner.frame().get()), "Study tab lost the shared measurement");
     owner.reset();
     require(access.retry(), "Workspace access did not recover");
     study.allow_saving();
-    primary();
-    until([&] { return !study.busy(); });
-    require(study.showing_source(), "Take snapshot did not select the captured field");
-    require(canvas_min.x == original_min.x && canvas_min.y == original_min.y &&
-                canvas_max.x == original_max.x && canvas_max.y == original_max.y,
-            "Capturing the current field moved or resized its viewport");
-    auto catalog = list_gallery(directory / "studies");
-    require(catalog.entries.size() == 1 && !fs::exists(directory / "gallery"),
-            "Snapshot capture did not create exactly one separate archive entry");
-    auto captured = load_gallery_state(directory / "studies", catalog.entries[0].id);
-    same_field(captured, original, "Snapshot changed the paused field");
-    require(catalog.entries[0].view.yaw == views[1].yaw &&
-                catalog.entries[0].view.offset[0] == views[1].offset[0],
-            "Capture lost the camera");
-    auto sessions = runner.snapshot_sessions().get();
-    same_field(*sessions.states[0], inactive, "Snapshot capture modified the inactive simulation");
-    same_field(*sessions.reset_states[1], original, "Snapshot capture modified Reset");
-    click({tab_origin.x + 35, tab_origin.y + 9});
-    require(tab == 0 && study.showing_source(), "Simulation tab silently replaced the viewed snapshot");
-    click({tab_origin.x + 110, tab_origin.y + 9});
-    // Choose Current simulation in the actual source menu; selecting a view creates no new snapshot.
-    click({controls_origin.x + 100, controls_origin.y + 9});
-    require(GImGui->OpenPopupStack.Size == 1, "Study field selector did not open");
-    auto *popup = GImGui->OpenPopupStack[0].Window;
-    click({popup->Pos.x + 90, popup->Pos.y + ImGui::GetStyle().WindowPadding.y + 7});
-    require(!study.showing_source(), "Current simulation did not return to the live field");
+    // Playing/stepping updates the same workspace; stale component masks must never cover it.
     runner.play(true);
     until([&] { return runner.frame()->running && runner.frame()->state.steps > 0; });
+    require(!study.showing_components(runner.frame().get()), "Play retained an obsolete component overlay");
     click({tab_origin.x + 35, tab_origin.y + 9});
     click({tab_origin.x + 110, tab_origin.y + 9});
     require(runner.frame()->running, "Changing tabs paused the simulation");
-    primary();
-    until([&] { return !study.busy(); });
-    require(study.showing_source() && !runner.frame()->running, "Capture did not pause a running field");
-    catalog = list_gallery(directory / "studies");
-    require(catalog.entries.size() == 2, "Explicit second capture did not create a second snapshot");
-    captured = load_gallery_state(directory / "studies", catalog.entries[0].id);
-    same_field(runner.capture_current().get(), captured, "Capture missed the simulation step boundary");
-    // Change the simulation independently; the visible Load action must restore the selected snapshot.
+    measure();
+    require(!runner.frame()->running, "Measurement did not pause at a step boundary");
+    const auto revision = runner.frame()->field_revision;
+    auto captured = runner.capture_field().get();
+    require(captured.revision == revision && captured.state.steps > 0,
+            "Measurement captured the wrong field revision");
+    runner.step();
+    until([&] { return runner.frame()->field_revision != revision; });
+    require(!study.showing_components(runner.frame().get()), "A step retained old shape colors");
+    measure();
+    auto config = original.config;
+    config.mu += .01;
+    runner.parameters(config);
+    auto changed = runner.capture_field().get();
+    frame();
+    require(!study.showing_components(runner.frame().get()), "Parameter changes retained old measurements");
     runner.randomize(original.config, 91);
-    auto changed = runner.capture_current().get();
-    require(changed.seed == 91, "Test could not prepare a different current simulation");
-    primary();
+    changed = runner.capture_field().get();
+    require(changed.state.seed == 91, "Randomization did not change the shared workspace");
+    // Invalidate even when replacement occurs while a measurement is pending.
+    click({controls_origin.x + 60, controls_origin.y + 2 * ImGui::GetFrameHeightWithSpacing() + 1 +
+                                       ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeight() * .5f});
+    runner.restore(original).get();
     until([&] { return !study.busy(); });
-    require(!study.showing_source() && study.take_simulation_request(), "Load did not return to Simulation");
-    same_field(runner.capture_current().get(), captured, "Load into Simulation restored the wrong field");
+    require(!study.showing_components(runner.frame().get()),
+            "An old async measurement covered a replacement field");
+    measure();
+    auto sessions = runner.snapshot_sessions().get();
+    same_field(*sessions.states[0], inactive, "Study modified the inactive simulation");
+    same_field(*sessions.reset_states[1], original, "Study modified Reset");
     runner.step();
     runner.reset(91);
-    same_field(runner.capture_current().get(), captured, "Loaded snapshot did not become the Reset target");
+    same_field(runner.capture_current().get(), original, "Study changed the Reset starting field");
+    require(!fs::exists(directory / "studies"), "Shape operations created a snapshot collection");
+    // Run a behavior study directly, then change the workspace while it calculates.
+    // Its report must retain the input it captured, without restoring that input over newer work.
+    choose_tool(1);
+    auto run_study = [&] {
+        const float fh = ImGui::GetFrameHeightWithSpacing(), th = ImGui::GetTextLineHeightWithSpacing();
+        click({controls_origin.x + 50, controls_origin.y + 2 * fh + 1 + ImGui::GetStyle().ItemSpacing.y +
+                                           4 * (th + fh) + th + ImGui::GetFrameHeight() * .5f});
+    };
+    runner.randomize(config, 101);
+    auto input = runner.capture_current().get();
+    run_study();
+    runner.randomize(config, 102);
+    auto newer = runner.capture_current().get();
+    until([&] { return !study.busy(); });
+    auto reports = list_gallery(directory / "studies");
+    require(reports.entries.size() == 1, "Run study did not capture its own input automatically");
+    same_field(load_gallery_state(directory / "studies", reports.entries[0].id), input,
+               "Study used a different field from the one present when Run was pressed");
+    require(list_gallery_studies(directory / "studies", reports.entries[0].id).entries.size() == 1,
+            "Direct current-field study did not save its report");
+    same_field(runner.capture_current().get(), newer, "Study restored an old source over newer work");
+    require(controls.find("Run study") != std::string::npos, "Completing a study collapsed its controls");
+    run_study();
+    until([&] { return !study.busy(); });
+    reports = list_gallery(directory / "studies");
+    require(reports.entries.size() == 2, "A subsequent study reused the old workspace field");
+    same_field(load_gallery_state(directory / "studies", reports.entries.front().id), newer,
+               "Second study did not use the current field");
+    require(!fs::exists(directory / "gallery"), "Direct studies added patterns to the gallery");
     ImGui::DestroyContext();
-    std::cout << "PASS Study workflow: independent tabs/view, real snapshot and load buttons, read-only "
-                 "recovery, exact paused/running capture, stable camera/viewport, inactive field and Reset\n";
+    std::cout << "PASS shared Study workspace: immediate tools, read-only measurement, stable tabs/camera, "
+                 "pause/play/step, field replacement, stale-result rejection, current-field reports, "
+                 "inactive field and Reset\n";
 }

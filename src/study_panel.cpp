@@ -1,9 +1,8 @@
 #include "study_panel.h"
 #include "imgui.h"
-#include "viewer.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
-#include <ctime>
 #include <utility>
 
 namespace lenia {
@@ -11,26 +10,9 @@ namespace {
 template <class T> bool ready(std::future<T> &f) {
     return f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
 }
-std::string snapshot_label(const GalleryEntry &entry) {
-    const auto created = static_cast<time_t>(entry.created);
-    tm local{};
-    localtime_s(&local, &created);
-    char date[40];
-    std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", &local);
-    return std::string(date) + " / " + (entry.state.config.depth > 1 ? "3D" : "2D");
-}
 } // namespace
 StudyPanel::StudyPanel(std::filesystem::path path, bool can_write, std::shared_ptr<GpuContext> context)
-    : archive_root(std::move(path)), writable(can_write), gpu(std::move(context)) {
-    if (!archive_root.empty()) {
-        job = Job::Scan;
-        work = std::async(std::launch::async, [path = archive_root] {
-            Result r;
-            r.catalog = list_gallery(path);
-            return r;
-        });
-    }
-}
+    : archive_root(std::move(path)), writable(can_write), gpu(std::move(context)) {}
 StudyPanel::~StudyPanel() {
     study_stop = true;
     if (work.valid())
@@ -42,19 +24,35 @@ bool StudyPanel::busy() const {
 bool StudyPanel::can_change_source() const {
     return !busy() && !pending_study && !captured;
 }
+bool StudyPanel::showing_components(const Frame *frame) const {
+    return shape && frame && !frame->running && shape->revision == frame->field_revision;
+}
+Renderer &StudyPanel::field_renderer(Renderer &live, const Frame *frame) const {
+    return showing_components(frame) ? *shape->renderer : live;
+}
 bool StudyPanel::take_activation() {
     return std::exchange(activate, false);
 }
-bool StudyPanel::take_simulation_request() {
-    return std::exchange(simulation_requested, false);
-}
-void StudyPanel::use_current(Runner &runner, const std::array<ViewSettings, 2> &views) {
-    if (!can_change_source() || !writable || archive_root.empty())
+void StudyPanel::request(Job operation, Runner &runner, const std::array<ViewSettings, 2> &views) {
+    if (!can_change_source() || (operation != Job::Shape && (!writable || archive_root.empty())))
         return;
+    if (operation == Job::Shape &&
+        (!std::isfinite(shape_threshold) || shape_threshold < 0 || shape_threshold > 1))
+        throw std::invalid_argument("Shape threshold must be in [0,1]");
     capture_views = views;
-    capture = runner.capture_current();
+    capture = runner.capture_field();
+    requested = operation;
+    study_stop = false;
     message.clear();
-    activate = true;
+}
+void StudyPanel::start_requested() {
+    auto operation = std::exchange(requested, Job::None);
+    if (study_stop)
+        return;
+    if (operation == Job::Study)
+        begin_study();
+    else if (operation == Job::Batch)
+        begin_batch();
 }
 void StudyPanel::save_capture() {
     if (!captured || busy())
@@ -63,38 +61,29 @@ void StudyPanel::save_capture() {
     job = Job::Capture;
     work = std::async(std::launch::async, [this] {
         Result r;
-        const auto &s = *captured;
+        const auto &s = captured->state;
         auto view = capture_views[s.config.depth > 1];
-        r.renderer = std::make_unique<Renderer>(gpu);
-        r.renderer->upload(s);
-        r.renderer->draw(view, 384, 288);
+        Renderer preview(gpu);
+        preview.upload(s);
+        preview.draw(view, 384, 288);
         GalleryNotes notes;
-        notes.title = std::string(s.config.depth > 1 ? "3D" : "2D") + " current field at step " +
-                      std::to_string(s.steps);
-        // Reuse the atomic checkpoint/metadata format, in the separate study archive.
-        r.entry = save_gallery_entry(archive_root, s, view, notes, r.renderer->capture_bmp());
+        notes.title =
+            std::string(s.config.depth > 1 ? "3D" : "2D") + " field at step " + std::to_string(s.steps);
+        // Retain exact experiment inputs with their reports, without exposing a second gallery.
+        r.entry = save_gallery_entry(archive_root, s, view, notes, preview.capture_bmp());
         r.source_root = archive_root;
-        try {
-            r.catalog = list_gallery(archive_root);
-        } catch (const std::exception &e) {
-            r.catalog.entries.push_back(*r.entry);
-            r.catalog.errors.push_back(e.what());
-        }
         return r;
     });
 }
 void StudyPanel::open_source(std::filesystem::path path, std::string id) {
     if (!can_change_source())
         return;
-    activate = true;
     message.clear();
     job = Job::Select;
-    work = std::async(std::launch::async, [path, id, context = gpu] {
+    work = std::async(std::launch::async, [path, id] {
         Result r;
         r.entry = read_gallery_entry(path, id);
-        auto source = load_gallery_state(path, id);
-        r.renderer = std::make_unique<Renderer>(context);
-        r.renderer->upload(source);
+        r.state = load_gallery_state(path, id);
         r.source_root = path;
         r.studies_source = id;
         try {
@@ -111,32 +100,16 @@ void StudyPanel::open_source(std::filesystem::path path, std::string id) {
     });
 }
 void StudyPanel::reset_source() {
-    shape.reset();
-    shape_component = 0;
-    shape_scalar = false;
-    shape_view = selected->view;
     studies = {};
     batches.clear();
     study_index = batch_index = batch_run = 0;
     batch_label[0] = 0;
-    study_settings_open = batch_settings_open = true;
-    results_requested = false;
-    study_backend = selected->state.backend.find("GPU") != std::string::npos ? 1 : 0;
-#ifdef LENIA_ENABLE_CUDA
-    if (selected->state.backend.find("cuFFT") != std::string::npos)
-        study_backend = 2;
-#endif
-    batch_plan.first_seed = selected->state.seed;
-    batch_plan.reseed = false;
-    batch_plan.repetitions = 1;
-    batch_plan.axis = BatchAxis::Mu;
-    std::snprintf(batch_value_text, sizeof batch_value_text, "%.6g, %.6g, %.6g",
-                  selected->state.config.mu - .01, selected->state.config.mu,
-                  selected->state.config.mu + .01);
+    requested_presentation = 0;
 }
 void StudyPanel::restore_source() {
-    restore_view = shape_view;
+    restore_view = selected->view;
     restore_mode = selected->state.config.depth > 1;
+    attach_restore = true;
     job = Job::Load;
     work = std::async(std::launch::async, [path = root, id = selected->id] {
         Result r;
@@ -155,36 +128,39 @@ void StudyPanel::retry_save() {
 void StudyPanel::tick(Runner &runner, std::array<ViewSettings, 2> &views) {
     try {
         if (ready(capture)) {
-            captured = capture.get();
-            save_capture();
+            auto input = capture.get();
+            if (requested == Job::Shape) {
+                requested = Job::None;
+                begin_shape(std::move(input));
+            } else if (selected && source_revision == input.revision) {
+                start_requested();
+            } else {
+                captured = std::move(input);
+                save_capture();
+            }
         }
         if (ready(work)) {
             auto result = work.get();
             auto completed = job;
             job = Job::None;
-            if (completed == Job::Scan || completed == Job::Capture)
-                archive = std::move(result.catalog);
             if (result.entry) {
                 selected = std::move(result.entry);
                 root = std::move(result.source_root);
-                source_renderer = std::move(result.renderer);
+                source_revision.reset();
                 reset_source();
-                viewing_source = true;
-                runner.play(false); // Explicit snapshot selection pauses the now-hidden simulation.
                 message.clear();
             }
             if (completed == Job::Capture) {
+                source_revision = captured->revision;
                 captured.reset();
                 write_error.clear();
             }
             if (result.studies && selected && selected->id == result.studies_source) {
                 studies = std::move(*result.studies);
                 study_index = 0;
-                study_settings_open = studies.entries.empty();
             }
             if (result.batches && selected && selected->id == result.studies_source) {
                 batches = std::move(*result.batches);
-                batch_settings_open = batches.empty();
                 batch_index = batch_run = 0;
                 std::snprintf(batch_label, sizeof batch_label, "%s",
                               batches.empty() || batches.front().result.runs.empty()
@@ -192,14 +168,12 @@ void StudyPanel::tick(Runner &runner, std::array<ViewSettings, 2> &views) {
                                   : batches.front().result.runs.front().label.c_str());
             }
             if (result.batch) {
-                batch_settings_open = false;
                 if (completed == Job::BatchLabel)
                     batches.at(batch_index) = std::move(*result.batch);
                 else {
                     batches.insert(batches.begin(), std::move(*result.batch));
                     batch_index = batch_run = 0;
                     batch_label[0] = 0;
-                    results_requested = tool == 2;
                 }
                 const auto &b = batches.at(batch_index).result;
                 message = "Batch " + b.status + ": " + std::to_string(b.runs.size()) + " saved runs.";
@@ -212,98 +186,85 @@ void StudyPanel::tick(Runner &runner, std::array<ViewSettings, 2> &views) {
                 shape_scalar = false;
                 message.clear();
             }
-            if (result.state)
-                restore = runner.restore(std::move(*result.state));
+            if (result.state) {
+                if (completed == Job::Select) {
+                    activate_on_restore = true;
+                    restore_view = selected->view;
+                    restore_mode = selected->state.config.depth > 1;
+                    attach_restore = true;
+                }
+                restore = runner.restore_field(std::move(*result.state));
+            }
             if (result.report) {
                 pending_study = std::move(result.report);
                 save_study();
             }
             if (completed == Job::SaveStudy) {
                 pending_study.reset();
-                results_requested = tool == 1;
                 message = "Behavior report saved.";
             }
             if (completed == Job::Select && !result.catalog.errors.empty())
                 message = result.catalog.errors.front();
+            if (completed == Job::Capture)
+                start_requested();
         }
         if (ready(restore)) {
-            restore.get();
+            auto revision = restore.get();
             views[restore_mode] = restore_view;
-            viewing_source = false;
-            simulation_requested = true;
-            message = "Loaded field into Simulation, paused. Reset restores that field.";
+            if (attach_restore)
+                source_revision = revision;
+            else
+                source_revision.reset();
+            attach_restore = false;
+            requested_presentation = 0;
+            activate |= std::exchange(activate_on_restore, false);
         }
+        auto current = runner.frame();
+        if (shape && current && (current->running || shape->revision != current->field_revision))
+            shape.reset();
     } catch (const std::exception &e) {
         message = e.what();
         if (job == Job::Capture || job == Job::SaveStudy)
             write_error = "Study save failed: " + message;
         job = Job::None;
+        if (!captured)
+            requested = Job::None;
         if (smoke_phase)
             throw;
     }
 }
 void StudyPanel::draw_controls(Runner &runner, const std::array<ViewSettings, 2> &views, float dpi,
                                bool closing) {
-    // Selecting a panel never selects a different field. Only these explicit source actions do.
-    const std::string label =
-        showing_source()
-            ? (root == archive_root ? snapshot_label(*selected) : "Gallery: " + selected->annotation.title)
-            : "Current simulation";
+    auto frame = runner.frame();
+    if (!controls_initialized && frame) {
+        study_backend = frame->cuda ? 2 : frame->gpu ? 1 : 0;
+        batch_plan.first_seed = frame->state.seed;
+        const auto mu = frame->state.config.mu;
+        std::snprintf(batch_value_text, sizeof batch_value_text, "%.6g, %.6g, %.6g", mu - .01, mu, mu + .01);
+        controls_initialized = true;
+    }
     ImGui::SetNextItemWidth(-1);
-    if (ImGui::BeginCombo("##Study field", label.c_str())) {
-        if (ImGui::Selectable("Current simulation", !showing_source()))
-            show_current();
-        if (selected && root != archive_root &&
-            ImGui::Selectable(("Gallery: " + selected->annotation.title).c_str(), showing_source())) {
-            runner.play(false);
-            viewing_source = true;
-        }
-        if (!archive.entries.empty()) {
-            ImGui::SeparatorText("Saved snapshots");
-            for (const auto &entry : archive.entries) {
-                ImGui::PushID(entry.id.c_str());
-                const bool retained = selected && root == archive_root && selected->id == entry.id;
-                ImGui::BeginDisabled(closing || (!retained && !can_change_source()));
-                if (ImGui::Selectable(snapshot_label(entry).c_str(), showing_source() && retained)) {
-                    if (retained) {
-                        runner.play(false);
-                        viewing_source = true;
-                    } else
-                        open_source(archive_root, entry.id);
-                }
-                ImGui::EndDisabled();
-                ImGui::PopID();
-            }
-        }
-        ImGui::EndCombo();
-    }
-    if (showing_source()) {
-        ImGui::BeginDisabled(!can_change_source() || closing);
-        if (ImGui::Button("Load into Simulation", {-1, 0}))
-            restore_source();
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Replace the simulation with this snapshot, paused. Reset will return to it.");
-    } else {
-        ImGui::BeginDisabled(!can_change_source() || closing || !writable || archive_root.empty());
-        if (ImGui::Button("Take snapshot", {-1, 0}))
-            use_current(runner, views);
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Pause and save this field for measurement and experiments.");
-        if (!writable || archive_root.empty())
-            ImGui::TextWrapped("Snapshot saving is unavailable until workspace access is restored.");
-    }
+    ImGui::Combo("##Study tool", &tool, "Shape\0Behavior\0Batches\0");
+    ImGui::Separator();
+    // Tool controls are always present; neither a source selector nor a capture step gates them.
+    ImGui::BeginDisabled(!frame);
+    State empty;
+    const auto &state = frame ? frame->state : empty;
+    if (tool == 0)
+        draw_shape(runner, views, dpi, closing);
+    else if (tool == 1)
+        draw_study(runner, views, state, dpi, closing);
+    else
+        draw_batch(runner, views, state, dpi, closing);
+    ImGui::EndDisabled();
     if (busy()) {
-        const char *action = capture.valid()                       ? "Pausing and capturing..."
-                             : job == Job::Scan                    ? "Reading saved snapshots..."
-                             : job == Job::Capture                 ? "Saving snapshot..."
-                             : job == Job::Select                  ? "Opening snapshot..."
-                             : job == Job::Load || restore.valid() ? "Loading simulation..."
-                             : job == Job::Shape                   ? "Measuring shape..."
-                             : job == Job::Study                   ? "Running behavior study..."
-                             : job == Job::Batch                   ? "Running batch..."
-                                                                   : "Saving results...";
+        const char *action = capture.valid()       ? "Pausing for measurement..."
+                             : job == Job::Capture ? "Saving experiment input..."
+                             : job == Job::Select || job == Job::Load || restore.valid() ? "Loading field..."
+                             : job == Job::Shape ? "Measuring shape..."
+                             : job == Job::Study ? "Running behavior study..."
+                             : job == Job::Batch ? "Running batch..."
+                                                 : "Saving results...";
         ImGui::TextColored({.38f, .85f, .77f, 1}, "%s", action);
     }
     if (!message.empty())
@@ -314,102 +275,83 @@ void StudyPanel::draw_controls(Runner &runner, const std::array<ViewSettings, 2>
         if (ImGui::Button("Discard unsaved result")) {
             pending_study.reset();
             captured.reset();
+            requested = Job::None;
             write_error.clear();
         }
     }
-    for (const auto &error : archive.errors)
-        ImGui::TextWrapped("Snapshot skipped: %s", error.c_str());
-    if (!showing_source()) {
-        if ((job == Job::Study || job == Job::Batch) && ImGui::Button("Stop and keep partial results"))
-            stop_study();
-        return;
-    }
-    ImGui::Separator();
-    ImGui::SetNextItemWidth(-1);
-    ImGui::Combo("##Study tool", &tool, "Shape\0Behavior\0Batches\0");
-    ImGui::Separator();
-    if (tool == 0)
-        draw_shape(dpi, closing);
-    else if (tool == 1)
-        draw_study(dpi, closing);
-    else
-        draw_batch(dpi, closing);
     if ((job == Job::Study && tool != 1) || (job == Job::Batch && tool != 2)) {
-        ImGui::TextWrapped("A study is running in the background.");
         if (ImGui::Button("Stop and keep partial results"))
             stop_study();
     }
 }
-void StudyPanel::draw_simulation_actions(bool closing) {
-    ImGui::BeginDisabled(!can_change_source() || closing);
-    if (ImGui::Button("Load into Simulation", {-1, 0}))
-        restore_source();
-    ImGui::EndDisabled();
-    if (ImGui::Button("Show current simulation", {-1, 0}))
-        show_current();
-    if (job == Job::Study || job == Job::Batch) {
-        if (ImGui::Button("Stop and keep partial results"))
-            stop_study();
-    } else if (busy())
-        ImGui::TextDisabled("Finishing study operation...");
-    else if (!can_change_source())
-        ImGui::TextWrapped("Save or discard the unsaved result in Study first.");
-}
-double StudyPanel::draw_scene(float dpi, bool closing) {
-    if (!showing_source())
-        return 0;
-    const auto &state = selected->state;
-    const auto title = root == archive_root ? snapshot_label(*selected) : selected->annotation.title;
-    ImGui::Text("Snapshot: %s", title.c_str());
-    ImGui::Text("%s   %d x %d x %d", state.config.depth > 1 ? "3D LENIA" : "2D LENIA", state.config.width,
-                state.config.height, state.config.depth);
-    ImGui::SameLine();
-    ImGui::TextDisabled("  t = %.3f   step %llu", state.time, static_cast<unsigned long long>(state.steps));
+double StudyPanel::draw_scene(Renderer &live, const Frame *frame, const Config &config, ViewSettings &view,
+                              ViewerUi &viewer, float dpi, bool closing) {
+    ImGui::TextUnformatted("Current field");
+    if (frame) {
+        ImGui::Text("%s   %d x %d x %d", config.depth > 1 ? "3D LENIA" : "2D LENIA", config.width,
+                    config.height, config.depth);
+        ImGui::SameLine();
+        ImGui::TextDisabled("  t = %.3f   step %llu", frame->state.time,
+                            static_cast<unsigned long long>(frame->state.steps));
+    } else
+        ImGui::TextUnformatted("Preparing simulation...");
     double submit = 0;
     auto field = [&] {
         auto size = ImGui::GetContentRegionAvail();
         size.x = std::max(1.f, size.x);
-        size.y = std::max(1.f, size.y - 118 * dpi); // Match the simulation viewport across capture/load.
+        size.y = std::max(1.f, size.y - 118 * dpi);
         ViewerOptions options;
-        Renderer *renderer = source_renderer.get();
-        if (tool == 0 && shape) {
-            renderer = shape->renderer.get();
+        if (showing_components(frame)) {
             options.components = !shape_scalar;
             options.isolate = shape_component;
             options.measured_threshold = float(shape->threshold);
         }
-        submit = draw_viewer("Study", *renderer, selected->state.config, shape_view, viewer_ui, size, dpi,
-                             options);
+        submit =
+            draw_viewer("Simulation", field_renderer(live, frame), config, view, viewer, size, dpi, options);
+        if (frame) {
+            ImGui::Text("%.1f steps/s    %.2f ms compute    %.0f display fps", frame->steps_per_second,
+                        frame->timings.total_ms, ImGui::GetIO().Framerate);
+            ImGui::TextDisabled("%.2f ms display preparation    %s", frame->publication_ms,
+                                frame->gpu_image ? "GPU resident" : "CPU transfer");
+            ImGui::TextDisabled("Mean %.5f    range [%.4f, %.4f]    %s", frame->measures.mean,
+                                frame->measures.minimum, frame->measures.maximum,
+                                frame->gpu ? "GPU float" : "CPU double");
+        }
+        ImGui::TextDisabled(config.depth > 1 && view.view != 0
+                                ? "Drag to orbit  |  Wheel to zoom  |  Space to play/pause"
+                                : "Wheel to zoom  |  Space to play/pause");
     };
-    if (tool == 0)
+    if (studies.entries.empty() && batches.empty()) {
+        presentation = 0;
         field();
-    else {
-        ImGui::PushID(tool);
-        if (ImGui::BeginTabBar("Study presentation")) {
-            if (ImGui::BeginTabItem("Field")) {
-                field();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Results", nullptr,
-                                    results_requested ? ImGuiTabItemFlags_SetSelected : 0)) {
-                ImGui::BeginChild("Study results");
-                if (tool == 1) {
-                    if (studies.entries.empty())
-                        ImGui::TextWrapped("Run a behavior study to measure change from this source.");
-                    draw_study_results(dpi);
-                } else {
-                    if (batches.empty())
-                        ImGui::TextWrapped("Run a batch to compare outcomes from this source.");
-                    draw_batch_results(dpi, closing);
-                }
+    } else if (ImGui::BeginTabBar("Workspace presentation")) {
+        if (ImGui::BeginTabItem("Field", nullptr,
+                                requested_presentation == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            presentation = 0;
+            field();
+            ImGui::EndTabItem();
+        }
+        auto results = [&](const char *label, int index, auto draw) {
+            if (ImGui::BeginTabItem(label, nullptr,
+                                    requested_presentation == index ? ImGuiTabItemFlags_SetSelected : 0)) {
+                presentation = index;
+                ImGui::BeginChild(label);
+                ImGui::Text("Source: %s, step %llu, seed %llu",
+                            selected->state.config.depth > 1 ? "3D" : "2D",
+                            static_cast<unsigned long long>(selected->state.steps),
+                            static_cast<unsigned long long>(selected->state.seed));
+                draw();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
-            ImGui::EndTabBar();
-            results_requested = false;
-        }
-        ImGui::PopID();
+        };
+        if (!studies.entries.empty())
+            results("Behavior results", 1, [&] { draw_study_results(dpi); });
+        if (!batches.empty())
+            results("Batch results", 2, [&] { draw_batch_results(dpi, closing); });
+        ImGui::EndTabBar();
     }
+    requested_presentation = -1;
     return submit;
 }
 } // namespace lenia

@@ -7,31 +7,25 @@
 #include <future>
 
 namespace lenia {
-// Studies own an immutable source and independent presentation, never the live Runner's field.
-// Current-field snapshots are archived separately; existing gallery reports remain readable in place.
+// Operations act on Runner's current field. Immutable inputs belong to background jobs/results,
+// not to a second user workspace or a browsable snapshot collection.
 class StudyPanel {
   public:
     StudyPanel(std::filesystem::path archive, bool writable, std::shared_ptr<GpuContext>);
     ~StudyPanel();
     bool busy() const;
     bool can_change_source() const;
-    bool showing_source() const {
-        return viewing_source && selected && source_renderer;
-    }
-    void show_current() {
-        viewing_source = false;
-    }
+    bool showing_components(const Frame *) const;
+    Renderer &field_renderer(Renderer &, const Frame *) const;
     void allow_saving() {
         writable = true;
     }
-    void draw_simulation_actions(bool closing);
-    void use_current(Runner &, const std::array<ViewSettings, 2> &);
     void open_source(std::filesystem::path, std::string);
     void tick(Runner &, std::array<ViewSettings, 2> &);
     void draw_controls(Runner &, const std::array<ViewSettings, 2> &, float dpi, bool closing);
-    double draw_scene(float dpi, bool closing);
+    double draw_scene(Renderer &, const Frame *, const Config &, ViewSettings &, ViewerUi &, float dpi,
+                      bool closing);
     bool take_activation();
-    bool take_simulation_request();
     void stop_study() {
         study_stop = true;
     }
@@ -49,6 +43,8 @@ class StudyPanel {
     };
     struct ShapeMeasurement {
         Morphology shape;
+        Config config;
+        uint64_t revision = 0;
         double threshold = .01;
         std::vector<ShapeComponent> components;
         std::vector<uint32_t> order;
@@ -59,7 +55,6 @@ class StudyPanel {
         GalleryCatalog catalog;
         std::optional<GalleryEntry> entry;
         std::optional<State> state;
-        std::unique_ptr<Renderer> renderer;
         std::optional<BehaviorReport> report;
         std::optional<GalleryStudies> studies;
         std::optional<std::vector<SavedBatch>> batches;
@@ -69,7 +64,6 @@ class StudyPanel {
     };
     enum class Job {
         None,
-        Scan,
         Select,
         Capture,
         Load,
@@ -79,22 +73,20 @@ class StudyPanel {
         BatchLabel,
         Shape
     };
-    Job job = Job::None;
+    Job job = Job::None, requested = Job::None;
     std::filesystem::path archive_root, root;
-    bool writable, activate = false, simulation_requested = false, results_requested = false;
-    bool viewing_source = false;
+    bool writable, activate = false, attach_restore = false, activate_on_restore = false,
+                   controls_initialized = false;
     std::shared_ptr<GpuContext> gpu;
-    GalleryCatalog archive;
     std::optional<GalleryEntry> selected;
-    std::unique_ptr<Renderer> source_renderer;
+    std::optional<uint64_t> source_revision;
     std::future<Result> work;
-    std::future<State> capture;
-    std::future<void> restore;
-    std::optional<State> captured;
+    std::future<FieldCapture> capture;
+    std::future<uint64_t> restore;
+    std::optional<FieldCapture> captured;
     std::array<ViewSettings, 2> capture_views;
-    ViewSettings shape_view, restore_view;
-    ViewerUi viewer_ui;
-    int restore_mode = 0, tool = 0;
+    ViewSettings restore_view;
+    int restore_mode = 0, tool = 0, presentation = 0, requested_presentation = -1;
     std::string message, write_error;
     BehaviorOptions study_options;
     bool study_settings_open = true, study_zoom = false;
@@ -116,22 +108,24 @@ class StudyPanel {
     bool smoke_current = false;
     std::string smoke_signature;
     std::future<State> smoke_check;
+    void request(Job, Runner &, const std::array<ViewSettings, 2> &);
+    void start_requested();
     void save_capture();
     void reset_source();
     void restore_source();
-    void begin_shape();
-    void draw_components(float dpi);
-    void draw_shape(float dpi, bool closing);
+    void begin_shape(FieldCapture);
+    void draw_components(float dpi, const ViewSettings &);
+    void draw_shape(Runner &, const std::array<ViewSettings, 2> &, float dpi, bool closing);
     static void draw_shape_summary(const std::optional<Morphology> &, const Config &, double threshold);
     void begin_batch();
-    void draw_batch(float dpi, bool closing);
+    void draw_batch(Runner &, const std::array<ViewSettings, 2> &, const State &, float dpi, bool closing);
     void draw_batch_results(float dpi, bool closing);
     void batch_field(bool final);
     void batch_annotation();
     static std::vector<SavedBatch> read_batches(const std::filesystem::path &, std::vector<std::string> &);
     void begin_study();
     void save_study();
-    void draw_study(float dpi, bool closing);
+    void draw_study(Runner &, const std::array<ViewSettings, 2> &, const State &, float dpi, bool closing);
     void draw_study_results(float dpi);
 };
 } // namespace lenia

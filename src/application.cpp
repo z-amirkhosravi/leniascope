@@ -367,8 +367,6 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         study.tick(runner, views);
         if (study.take_activation())
             requested_tab = 1;
-        if (study.take_simulation_request())
-            requested_tab = 0;
         editor.tick();
         auto frame = runner.frame();
         if (options.gallery_smoke && frame && !gallery_smoke_done)
@@ -508,11 +506,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         ImGui::TextDisabled(" /  laboratory");
         ImGui::SameLine(300 * dpi);
         ImGui::BeginDisabled(close_requested || !frame || editor.active());
-        ImGui::BeginDisabled(study.showing_source());
         try {
             if (ImGui::Button(frame && frame->running ? "Pause" : "Play", {88 * dpi, 0}) ||
-                (frame && !study.showing_source() && !close_requested && !gallery.active() &&
-                 !editor.active() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                (frame && !close_requested && !gallery.active() && !editor.active() &&
+                 ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
                  !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
                  ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
                 runner.play(!(frame && frame->running));
@@ -540,7 +537,6 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         } catch (const std::exception &e) {
             local_message = e.what();
         }
-        ImGui::EndDisabled();
         ImGui::Separator();
         float status_height = 42 * dpi;
         float available_height = std::max(100.f, ImGui::GetContentRegionAvail().y - status_height);
@@ -570,8 +566,6 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         try {
             if (inspector_tab == 1)
                 study.draw_controls(runner, views, dpi, close_requested);
-            else if (study.showing_source())
-                study.draw_simulation_actions(close_requested);
             else {
                 ImGui::TextDisabled("SIMULATION");
                 int mode = is_volume ? 1 : 0;
@@ -811,7 +805,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 if (ImGui::Button("Export view", {-1, 0})) {
                     auto path = choose_file(window, true, true);
                     if (!path.empty()) {
-                        renderer.export_bmp(path);
+                        study.field_renderer(renderer, frame.get()).export_bmp(path);
                         local_message = "Exported " + path;
                     }
                 }
@@ -841,37 +835,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         ImGui::EndChild();
         ImGui::SameLine();
         ImGui::BeginChild("Scene", {0, available_height}, ImGuiChildFlags_Borders);
-        double draw_submit_ms = 0;
-        if (study.showing_source())
-            draw_submit_ms = study.draw_scene(dpi, close_requested);
-        else {
-            ImGui::TextUnformatted("Current simulation");
-            if (frame) {
-                ImGui::Text("%s   %d x %d x %d", is_volume ? "3D LENIA" : "2D LENIA",
-                            frame->state.config.width, frame->state.config.height, frame->state.config.depth);
-                ImGui::SameLine();
-                ImGui::TextDisabled("  t = %.3f   step %llu", frame->state.time,
-                                    static_cast<unsigned long long>(frame->state.steps));
-            } else
-                ImGui::Text("Preparing simulation...");
-            ImVec2 image_size = ImGui::GetContentRegionAvail();
-            image_size.y = std::max(1.f, image_size.y - 118 * dpi);
-            image_size.x = std::max(1.f, image_size.x);
-            draw_submit_ms = draw_viewer("Simulation", renderer, frame ? frame->state.config : edit, view,
-                                         live_viewer, image_size, dpi);
-            if (frame) {
-                ImGui::Text("%.1f steps/s    %.2f ms compute    %.0f display fps", frame->steps_per_second,
-                            frame->timings.total_ms, io.Framerate);
-                ImGui::TextDisabled("%.2f ms display preparation    %s", frame->publication_ms,
-                                    frame->gpu_image ? "GPU resident" : "CPU transfer");
-                ImGui::TextDisabled("Mean %.5f    range [%.4f, %.4f]    %s", frame->measures.mean,
-                                    frame->measures.minimum, frame->measures.maximum,
-                                    frame->gpu ? "GPU float" : "CPU double");
-            }
-            ImGui::TextDisabled(is_volume && view.view != 0
-                                    ? "Drag to orbit  |  Wheel to zoom  |  Space to play/pause"
-                                    : "Wheel to zoom  |  Space to play/pause");
-        }
+        double draw_submit_ms = study.draw_scene(renderer, frame.get(), frame ? frame->state.config : edit,
+                                                 view, live_viewer, dpi, close_requested);
         ImGui::EndChild();
         ImGui::EndDisabled();
         if (local_message != previous_local_message) {

@@ -51,8 +51,11 @@
     <ClCompile Include="src\morphology.cpp" />
     <ClCompile Include="src\batch.cpp" />
     <ClCompile Include="src\gallery_panel.cpp" />
-    <ClCompile Include="src\gallery_batch.cpp" />
-    <ClCompile Include="src\gallery_shape.cpp" />
+    <ClCompile Include="src\study_panel.cpp" />
+    <ClCompile Include="src\study_behavior.cpp" />
+    <ClCompile Include="src\study_batch.cpp" />
+    <ClCompile Include="src\study_shape.cpp" />
+    <ClCompile Include="src\study_smoke.cpp" />
     <ClCompile Include="src\editor_panel.cpp" />
     <ClCompile Include="src\field_edit.cpp" />
     <ClCompile Include="src\desktop_workspace.cpp" />

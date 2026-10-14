@@ -1,12 +1,12 @@
-#include "gallery_panel.h"
 #include "imgui.h"
+#include "study_panel.h"
 #include "viewer.h"
 #include <algorithm>
 #include <cmath>
 #include <numeric>
 
 namespace lenia {
-void GalleryPanel::begin_shape() {
+void StudyPanel::begin_shape() {
     if (!selected || busy() || pending_study)
         return;
     if (!std::isfinite(shape_threshold) || shape_threshold < 0 || shape_threshold > 1)
@@ -34,8 +34,8 @@ void GalleryPanel::begin_shape() {
                           return r;
                       });
 }
-void GalleryPanel::draw_shape_summary(const std::optional<Morphology> &shape, const Config &config,
-                                      double threshold) {
+void StudyPanel::draw_shape_summary(const std::optional<Morphology> &shape, const Config &config,
+                                    double threshold) {
     if (!shape) {
         ImGui::TextWrapped("Shape measurements are unavailable in this older report. Run a new study "
                            "or inspect the saved pattern in the Shape tab.");
@@ -57,19 +57,18 @@ void GalleryPanel::draw_shape_summary(const std::optional<Morphology> &shape, co
                        "count as a periodic loop.",
                        config.depth > 1 ? 6 : 4);
 }
-void GalleryPanel::draw_components(float dpi) {
+void StudyPanel::draw_components(float dpi) {
     auto &m = *shape;
     const auto &c = selected->state.config;
     auto &v = shape_view;
-    ImGui::Text("Components: %llu   Measured threshold: %.6g",
-                static_cast<unsigned long long>(m.shape.components), m.threshold);
+    ImGui::TextWrapped("Components: %llu   Measured threshold: %.6g",
+                       static_cast<unsigned long long>(m.shape.components), m.threshold);
     if (shape_threshold != m.threshold)
         ImGui::TextWrapped("Threshold changed. Measure again to update the colors and counts.");
     if (ImGui::Button("Show all components")) {
         shape_component = 0;
         shape_scalar = false;
     }
-    ImGui::SameLine();
     ImGui::Checkbox("Scalar field", &shape_scalar);
     if (shape_scalar) {
         ImGui::TextWrapped("All saved values with interpolated color; no component isolation.");
@@ -77,31 +76,15 @@ void GalleryPanel::draw_components(float dpi) {
             ImGui::Text("Display threshold: %.6g", m.threshold);
     } else if (shape_component) {
         const auto &part = m.components[shape_component - 1];
-        ImGui::Text("Only ID %u: %u cells (%.4g%%), loops %s", shape_component, part.cells,
-                    100. * part.cells / m.shape.active_cells, winding_axes_text(part.winding_axes).c_str());
+        ImGui::TextWrapped("Only ID %u: %u cells (%.4g%%), loops %s", shape_component, part.cells,
+                           100. * part.cells / m.shape.active_cells,
+                           winding_axes_text(part.winding_axes).c_str());
     } else
-        ImGui::TextWrapped("Select a component row to show only that region.");
+        ImGui::TextWrapped("Select a row to isolate a component.");
 
-    const bool beside =
-        ImGui::GetContentRegionAvail().x >= 500 * dpi && ImGui::BeginTable("Shape inspection", 2);
-    if (beside) {
-        ImGui::TableSetupColumn("Preview", ImGuiTableColumnFlags_WidthStretch, .55f);
-        ImGui::TableSetupColumn("Regions", ImGuiTableColumnFlags_WidthStretch, .45f);
-        ImGui::TableNextColumn();
-    }
-    const float w = std::max(1.f, ImGui::GetContentRegionAvail().x);
-    const float h = std::min(w, (beside ? 230 : 170) * dpi);
-    ViewerOptions viewer_options;
-    viewer_options.components = !shape_scalar;
-    viewer_options.isolate = shape_component;
-    viewer_options.measured_threshold = float(m.threshold);
-    draw_viewer("Shape viewer", *m.renderer, c, v, {w, h}, dpi, viewer_options);
-    if (beside)
-        ImGui::TableNextColumn();
-    if (ImGui::BeginTable("Components", 4,
-                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
-                          {0, std::min((beside ? 270 : 120) * dpi,
-                                       (m.order.size() + 1) * ImGui::GetFrameHeightWithSpacing())})) {
+    if (ImGui::BeginTable(
+            "Components", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+            {0, std::min(230 * dpi, (m.order.size() + 1) * ImGui::GetFrameHeightWithSpacing())})) {
         ImGui::TableSetupColumn("ID / color");
         ImGui::TableSetupColumn("Cells");
         ImGui::TableSetupColumn("% active");
@@ -138,13 +121,10 @@ void GalleryPanel::draw_components(float dpi) {
             }
         ImGui::EndTable();
     }
-    if (beside)
-        ImGui::EndTable();
     ImGui::TextWrapped("Largest first. IDs/colors belong to this measurement; they can change when you "
                        "remeasure. One color on opposite sides can be one region across the periodic seam.");
 }
-void GalleryPanel::draw_shape(float dpi, bool closing) {
-    ImGui::TextWrapped("Colors identify connected regions of the saved field, including periodic edges.");
+void StudyPanel::draw_shape(float dpi, bool closing) {
     ImGui::BeginDisabled(busy() || closing || bool(pending_study));
     ImGui::SetNextItemWidth(110 * dpi);
     ImGui::InputDouble("Shape threshold", &shape_threshold, 0, 0, "%.6g");
@@ -154,7 +134,7 @@ void GalleryPanel::draw_shape(float dpi, bool closing) {
     ImGui::BeginDisabled(!valid);
     if (valid && ImGui::GetContentRegionAvail().x > 460 * dpi)
         ImGui::SameLine();
-    if (ImGui::Button("Measure saved field")) {
+    if (ImGui::Button("Measure shape")) {
         try {
             begin_shape();
         } catch (const std::exception &e) {
@@ -164,20 +144,23 @@ void GalleryPanel::draw_shape(float dpi, bool closing) {
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (job == Job::Shape)
-        ImGui::TextDisabled("Measuring saved field...");
+        ImGui::TextDisabled("Measuring source...");
     if (shape) {
         ImGui::Separator();
         draw_components(dpi);
         if (ImGui::CollapsingHeader("Measurement details"))
             draw_shape_summary(shape->shape, selected->state.config, shape->threshold);
     }
-    ImGui::Separator();
-    ImGui::TextWrapped("The threshold changes what is connected: a faint bridge may join two regions. "
-                       "Try several thresholds when comparing shapes. Corner-only contacts are separate.");
-    ImGui::TextWrapped("Components count regions of active material, not their boundary surfaces. A hollow "
-                       "shell can be one region with inner and outer surfaces. Periodic loops describe "
-                       "winding around the domain, not genus or knotting. Those require further analysis.");
-    ImGui::TextWrapped("New behavior studies and batches record these measurements at every sampled time "
-                       "using their activity threshold, and include them in CSV exports.");
+    if (ImGui::CollapsingHeader("How to interpret shapes")) {
+        ImGui::TextWrapped(
+            "The threshold changes what is connected: a faint bridge may join two regions. "
+            "Try several thresholds when comparing shapes. Corner-only contacts are separate.");
+        ImGui::TextWrapped(
+            "Components count regions of active material, not their boundary surfaces. A hollow "
+            "shell can be one region with inner and outer surfaces. Periodic loops describe "
+            "winding around the domain, not genus or knotting. Those require further analysis.");
+        ImGui::TextWrapped("New behavior studies and batches record these measurements at every sampled time "
+                           "using their activity threshold, and include them in CSV exports.");
+    }
 }
 } // namespace lenia

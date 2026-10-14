@@ -51,7 +51,7 @@ def exercise(root):
                 f'2 .8 1.5 .2 .7 0 1\n23 .8 1.5 .2 .7 1 0\n{int(backend=="cuda")}\n2 .8 0 0\n1 .8 0 0\n')
             (profile / 'preferences.txt').write_text(settings)
             result = subprocess.run([str(gui), '--gallery-smoke', '--workspace', native(profile)],
-                cwd=case, capture_output=True, timeout=90)
+                cwd=case, capture_output=True, timeout=150)
             if result.returncode:
                 error = case / 'leniascope-error.log'
                 raise RuntimeError(error.read_text() if error.exists() else str(result))
@@ -63,28 +63,33 @@ def exercise(root):
             assert text.startswith('LeniascopeGallery 2\n') and 'Smoke reference' in text and 'test, periodic' in text
             bmp = (entry / 'preview.bmp').read_bytes()
             assert bmp[:2] == b'BM' and len(bmp) == 54 + 384*288*4
-            studies = [p for p in (entry / 'studies').iterdir() if not p.name.startswith('.')]
-            assert len(studies) == 1
-            report = (studies[0] / 'report.txt').read_text()
-            assert report.startswith('LeniascopeBehavior 2\n') and entry.name in report
-            rows = list(csv.DictReader((studies[0] / 'samples.csv').open()))
-            assert [int(row['step']) for row in rows] == [0, 3, 6, 7]
-            assert float(rows[0]['raw_rms']) == 0 and float(rows[0]['aligned_rms']) == 0
-            assert all(r['components'] != '' and r['active_cells'] != '' for r in rows)
-            batches = list((entry / 'batches').iterdir())
-            assert len(batches) == 1
-            batch = batches[0]
-            assert (batch / 'complete.txt').exists()
-            assert (batch / 'source.lenia').read_bytes() == original[active]
-            batch_rows = list(csv.DictReader((batch / 'summary.csv').open()))
-            assert len(batch_rows) == 2 and [float(r['value']) for r in batch_rows] == [.8, 1.5]
-            assert batch_rows[0]['label'] == 'smoke assessment'
-            for i, row in enumerate(batch_rows):
-                assert row['status'] == 'complete' and row['steps'] == '5' and row['seed'] == '216'
-                assert row['components'] != '' and row['winding_components'] != ''
-                run = batch / f'run-{i+1:04d}'
-                for kind in ['initial', 'final']:
-                    assert checksum((run / f'{kind}.lenia').read_bytes()) == int(row[f'{kind}_hash'])
+            snapshots = [p for p in (profile / 'studies').iterdir() if not p.name.startswith('.')]
+            assert len(snapshots) == 1, 'Direct study must keep its own source outside the gallery'
+            assert (snapshots[0] / 'state.lenia').read_bytes() == original[active]
+            assert len(list((profile / 'gallery').iterdir())) == 1, 'Direct study polluted the gallery'
+            for source in (entry, snapshots[0]):
+                studies = [p for p in (source / 'studies').iterdir() if not p.name.startswith('.')]
+                assert len(studies) == 1
+                report = (studies[0] / 'report.txt').read_text()
+                assert report.startswith('LeniascopeBehavior 2\n') and source.name in report
+                rows = list(csv.DictReader((studies[0] / 'samples.csv').open()))
+                assert [int(row['step']) for row in rows] == [0, 3, 6, 7]
+                assert float(rows[0]['raw_rms']) == 0 and float(rows[0]['aligned_rms']) == 0
+                assert all(r['components'] != '' and r['active_cells'] != '' for r in rows)
+                batches = list((source / 'batches').iterdir())
+                assert len(batches) == 1
+                batch = batches[0]
+                assert (batch / 'complete.txt').exists()
+                assert (batch / 'source.lenia').read_bytes() == original[active]
+                batch_rows = list(csv.DictReader((batch / 'summary.csv').open()))
+                assert len(batch_rows) == 2 and [float(r['value']) for r in batch_rows] == [.8, 1.5]
+                assert batch_rows[0]['label'] == 'smoke assessment'
+                for i, row in enumerate(batch_rows):
+                    assert row['status'] == 'complete' and row['steps'] == '5' and row['seed'] == '216'
+                    assert row['components'] != '' and row['winding_components'] != ''
+                    run = batch / f'run-{i+1:04d}'
+                    for kind in ['initial', 'final']:
+                        assert checksum((run / f'{kind}.lenia').read_bytes()) == int(row[f'{kind}_hash'])
             manifest = (profile / 'recovery-b/complete.txt').read_text().split()
             assert manifest[:6] == ['LeniascopeRecovery', '2', '2', '1', '1', str(active)]
             assert manifest[8:10] == [str(int(active==0)), str(int(active==1))]
@@ -97,11 +102,12 @@ def exercise(root):
             for a, b in zip(actual[2:], settings.splitlines()[2:]):
                 assert len(a.split()) == len(b.split())
                 assert all(abs(float(x)-float(y)) < 1e-6 for x,y in zip(a.split(), b.split()))
-            assert (case / 'ui-smoke.bmp').stat().st_size > 10000
+            for screen in ['ui-smoke.bmp', 'study-behavior-ui.bmp', 'study-batch-ui.bmp']:
+                assert (case / screen).stat().st_size > 10000
             for image in ['shape-components.bmp', 'shape-largest.bmp']:
                 bitmap = (profile / image).read_bytes()
                 assert bitmap[:2] == b'BM' and len(bitmap) == 54 + 320*240*4
-            print(f'PASS {backend} {active+2}D gallery GUI: capture/reload, behavior study, batch/label/reopen/endpoint load, unchanged live/inactive fields', flush=True)
+            print(f'PASS {backend} {active+2}D gallery + Study GUI: saved and direct sources, reports/batches/labels/reopen, full-size shape, unchanged live/inactive/Reset fields', flush=True)
 
 if args.output_dir:
     args.output_dir.resolve().mkdir(parents=True, exist_ok=False)

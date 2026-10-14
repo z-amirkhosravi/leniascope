@@ -7,6 +7,7 @@
 #include "imgui.h"
 #include "renderer.h"
 #include "runner.h"
+#include "study_panel.h"
 #include "viewer.h"
 #include <algorithm>
 #include <chrono>
@@ -99,6 +100,10 @@ void style(float scale) {
     s.Colors[ImGuiCol_Button] = {.13f, .23f, .28f, 1};
     s.Colors[ImGuiCol_ButtonHovered] = {.16f, .37f, .42f, 1};
     s.Colors[ImGuiCol_ButtonActive] = {.15f, .46f, .48f, 1};
+    s.Colors[ImGuiCol_Tab] = s.Colors[ImGuiCol_FrameBg];
+    s.Colors[ImGuiCol_TabHovered] = s.Colors[ImGuiCol_ButtonHovered];
+    s.Colors[ImGuiCol_TabSelected] = s.Colors[ImGuiCol_Button];
+    s.Colors[ImGuiCol_TabSelectedOverline] = {.38f, .85f, .77f, 1};
     s.Colors[ImGuiCol_CheckMark] = {.38f, .85f, .77f, 1};
     s.Colors[ImGuiCol_SliderGrab] = {.38f, .85f, .77f, 1};
     s.Colors[ImGuiCol_Text] = {.89f, .93f, .95f, 1};
@@ -249,6 +254,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     auto &views = preferences.views;
     GalleryPanel gallery(access ? access->directory / L"gallery" : std::filesystem::path{},
                          access && access->writable(), gpu_context);
+    StudyPanel study(access ? access->directory / L"studies" : std::filesystem::path{},
+                     access && access->writable(), gpu_context);
+    int inspector_tab = 0;
+    int requested_tab = -1;
     bool gallery_smoke_done = false;
     EditorPanel editor(gpu_context);
     bool editor_smoke_done = false;
@@ -349,12 +358,17 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         if (done)
             break;
         if (close_requested)
-            gallery.stop_study();
+            study.stop_study();
         gallery.tick(runner, views);
+        study.tick(runner, views);
+        if (study.take_activation())
+            requested_tab = 1;
+        if (study.take_simulation_request())
+            requested_tab = 0;
         editor.tick();
         auto frame = runner.frame();
         if (options.gallery_smoke && frame && !gallery_smoke_done)
-            gallery_smoke_done = gallery.smoke(runner, views);
+            gallery_smoke_done = gallery.smoke(runner, views, study);
         persist_workspace(frame);
         if (options.profile && frame && !profile_started) {
             runner.play(true);
@@ -383,7 +397,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17 * dpi);
             requested_dpi = 0;
         }
-        if (close_requested && closing_stage == 0 && !gallery.busy() && !editor.active()) {
+        if (close_requested && closing_stage == 0 && !gallery.busy() && !study.busy() && !editor.active()) {
             gallery_trace("close: capturing workspace");
             try {
                 closing_snapshot = runner.pause_and_snapshot();
@@ -412,10 +426,12 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 closing_stage = 3;
             }
         }
-        if (closing_stage == 2 && !gallery.busy() && (!writer || !writer->status().busy)) {
+        if (closing_stage == 2 && !gallery.busy() && !study.busy() && (!writer || !writer->status().busy)) {
             closing_error = writer ? writer->status().error : std::string();
             if (closing_error.empty())
                 closing_error = gallery.close_error();
+            if (closing_error.empty())
+                closing_error = study.close_error();
             if (closing_error.empty())
                 gallery_trace("close: workspace ready");
             if (closing_error.empty())
@@ -488,9 +504,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         ImGui::TextDisabled(" /  laboratory");
         ImGui::SameLine(300 * dpi);
         ImGui::BeginDisabled(close_requested || !frame || editor.active());
+        ImGui::BeginDisabled(inspector_tab == 1);
         try {
             if (ImGui::Button(frame && frame->running ? "Pause" : "Play", {88 * dpi, 0}) ||
-                (frame && !close_requested && !gallery.active() && !editor.active() &&
+                (frame && inspector_tab == 0 && !close_requested && !gallery.active() && !editor.active() &&
                  !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
                  ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
                 runner.play(!(frame && frame->running));
@@ -518,295 +535,334 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         } catch (const std::exception &e) {
             local_message = e.what();
         }
+        ImGui::EndDisabled();
         ImGui::Separator();
         float status_height = 42 * dpi;
         float available_height = std::max(100.f, ImGui::GetContentRegionAvail().y - status_height);
         float panel_width = std::min(320 * dpi, display.x * .36f);
         ImGui::BeginChild("Inspector", {panel_width, available_height}, ImGuiChildFlags_Borders);
+        if (ImGui::BeginTabBar("Inspector tabs")) {
+            if (ImGui::BeginTabItem("Simulation", nullptr,
+                                    requested_tab == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+                inspector_tab = 0;
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Study", nullptr,
+                                    requested_tab == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+                if (inspector_tab != 1)
+                    runner.play(false);
+                inspector_tab = 1;
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+            requested_tab = -1;
+        }
+        ImGui::BeginChild(inspector_tab == 0 ? "Simulation controls" : "Study controls", {0, 0});
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * .60f);
         try {
-            ImGui::TextDisabled("SIMULATION");
-            int mode = is_volume ? 1 : 0;
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::Combo("##dimension", &mode, "2D field\0 3D volume\0")) {
-                runner.mode(mode == 1);
-                dirty_config = false;
-            }
-#ifdef LENIA_ENABLE_CUDA
-            int backend = frame && frame->gpu ? (frame->cuda ? 2 : 1) : 0;
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::Combo("##compute", &backend,
-                             "CPU reference (float64)\0DirectCompute (float32)\0CUDA / cuFFT (float32)\0"))
-                runner.backend(backend != 0, backend == 2);
-#else
-            bool gpu = frame && frame->gpu;
-            if (ImGui::Checkbox("GPU compute (float32)", &gpu))
-                runner.backend(gpu);
-#endif
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("CPU uses double precision. GPU trajectories may diverge over long runs.");
-            ImGui::Spacing();
-            ImGui::Text("Model parameters");
-            float mu = float(edit.mu), sigma = float(edit.sigma), dt = float(edit.dt);
-            if (ImGui::SliderFloat("Mean", &mu, .01f, .5f, "%.4f")) {
-                edit.mu = mu;
-                dirty_config = true;
-            }
-            if (ImGui::SliderFloat("Width", &sigma, .001f, .1f, "%.4f")) {
-                edit.sigma = sigma;
-                dirty_config = true;
-            }
-            if (ImGui::SliderFloat("Time step", &dt, .001f, .5f, "%.4f")) {
-                edit.dt = dt;
-                dirty_config = true;
-            }
-            int max_radius = std::min(edit.width, edit.height) / 2;
-            if (edit.depth > 1)
-                max_radius = std::min(max_radius, edit.depth / 2);
-            if (ImGui::SliderInt("Radius", &edit.radius, 1, max_radius))
-                dirty_config = true;
-            int rule = int(edit.rule);
-            if (ImGui::Combo("Rule", &rule, "Classic Lenia\0Smooth reaction (experiment)\0")) {
-                edit.rule = Rule(rule);
-                dirty_config = true;
-            }
-            if (rule == 1) {
-                float sharp = float(edit.smoothness);
-                if (ImGui::SliderFloat("Sharpness", &sharp, 1, 40)) {
-                    edit.smoothness = sharp;
-                    dirty_config = true;
+            if (inspector_tab == 1)
+                study.draw_controls(runner, views, dpi, close_requested);
+            else {
+                ImGui::TextDisabled("SIMULATION");
+                int mode = is_volume ? 1 : 0;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::Combo("##dimension", &mode, "2D field\0 3D volume\0")) {
+                    runner.mode(mode == 1);
+                    dirty_config = false;
                 }
-                ImGui::TextWrapped(
-                    "Smooth bounded birth/death model. Different dynamics; empty regions can nucleate.");
-            }
-            if (ImGui::Button(dirty_config ? "Apply changes *" : "Apply changes", {-1, 0})) {
-                runner.parameters(edit);
-                dirty_config = false;
-            }
-            if (ImGui::CollapsingHeader("Grid and initialization", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::SliderInt("Power of two", &grid_power, 4, is_volume ? 8 : 11);
-                ImGui::Text("%d x %d%s", 1 << grid_power, 1 << grid_power, is_volume ? " x same" : "");
-                ImGui::Checkbox("Scale radius with grid", &preferences.scale_radius[is_volume]);
-                ImGui::BeginDisabled(seed_settings.layout != SeedLayout::Uniform);
-                ImGui::Checkbox("Keep seed coverage on resize", &preferences.keep_seed_coverage[is_volume]);
+#ifdef LENIA_ENABLE_CUDA
+                int backend = frame && frame->gpu ? (frame->cuda ? 2 : 1) : 0;
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::Combo(
+                        "##compute", &backend,
+                        "CPU reference (float64)\0DirectCompute (float32)\0CUDA / cuFFT (float32)\0"))
+                    runner.backend(backend != 0, backend == 2);
+#else
+                bool gpu = frame && frame->gpu;
+                if (ImGui::Checkbox("GPU compute (float32)", &gpu))
+                    runner.backend(gpu);
+#endif
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip(
-                        "Adjust patch count to preserve expected coverage, accounting for the new "
-                        "radius.\nThis creates a new random field; it does not resample the current state.");
-                ImGui::EndDisabled();
-                ImGui::InputScalar("Seed", ImGuiDataType_U64, &seed);
-                int layout = int(seed_settings.layout);
-                if (ImGui::Combo("Placement", &layout, "Across grid\0Single cluster\0Isolated pair\0")) {
-                    seed_settings.layout = SeedLayout(layout);
-                    if (seed_settings.layout == SeedLayout::Pair)
-                        seed_settings.patches = 2;
+                        "CPU uses double precision. GPU trajectories may diverge over long runs.");
+                ImGui::Spacing();
+                ImGui::Text("Model parameters");
+                float mu = float(edit.mu), sigma = float(edit.sigma), dt = float(edit.dt);
+                if (ImGui::SliderFloat("Mean", &mu, .01f, .5f, "%.4f")) {
+                    edit.mu = mu;
+                    dirty_config = true;
                 }
-                ImGui::BeginDisabled(seed_settings.layout == SeedLayout::Pair);
-                ImGui::InputInt("Patches", &seed_settings.patches);
-                seed_settings.patches = std::clamp(seed_settings.patches, 0, 4096);
-                ImGui::EndDisabled();
-                if (seed_settings.layout != SeedLayout::Uniform) {
-                    float spread = float(seed_settings.spread);
-                    if (ImGui::DragFloat(seed_settings.layout == SeedLayout::Pair ? "Separation / R"
-                                                                                  : "Spread / R",
-                                         &spread, .01f, 0, 16, "%.2f", ImGuiSliderFlags_AlwaysClamp))
-                        seed_settings.spread = spread;
+                if (ImGui::SliderFloat("Width", &sigma, .001f, .1f, "%.4f")) {
+                    edit.sigma = sigma;
+                    dirty_config = true;
+                }
+                if (ImGui::SliderFloat("Time step", &dt, .001f, .5f, "%.4f")) {
+                    edit.dt = dt;
+                    dirty_config = true;
+                }
+                int max_radius = std::min(edit.width, edit.height) / 2;
+                if (edit.depth > 1)
+                    max_radius = std::min(max_radius, edit.depth / 2);
+                if (ImGui::SliderInt("Radius", &edit.radius, 1, max_radius))
+                    dirty_config = true;
+                int rule = int(edit.rule);
+                if (ImGui::Combo("Rule", &rule, "Classic Lenia\0Smooth reaction (experiment)\0")) {
+                    edit.rule = Rule(rule);
+                    dirty_config = true;
+                }
+                if (rule == 1) {
+                    float sharp = float(edit.smoothness);
+                    if (ImGui::SliderFloat("Sharpness", &sharp, 1, 40)) {
+                        edit.smoothness = sharp;
+                        dirty_config = true;
+                    }
+                    ImGui::TextWrapped(
+                        "Smooth bounded birth/death model. Different dynamics; empty regions can nucleate.");
+                }
+                if (ImGui::Button(dirty_config ? "Apply changes *" : "Apply changes", {-1, 0})) {
+                    runner.parameters(edit);
+                    dirty_config = false;
+                }
+                if (ImGui::CollapsingHeader("Grid and initialization", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    ImGui::SliderInt("Power of two", &grid_power, 4, is_volume ? 8 : 11);
+                    ImGui::Text("%d x %d%s", 1 << grid_power, 1 << grid_power, is_volume ? " x same" : "");
+                    ImGui::Checkbox("Scale radius with grid", &preferences.scale_radius[is_volume]);
+                    ImGui::BeginDisabled(seed_settings.layout != SeedLayout::Uniform);
+                    ImGui::Checkbox("Keep seed coverage on resize",
+                                    &preferences.keep_seed_coverage[is_volume]);
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip(
-                            seed_settings.layout == SeedLayout::Pair
-                                ? "Distance between patch centres, not their edges. Rounded to cells."
-                                : "Patch centres are random within this radius of the grid centre.");
-                    if (seed_settings.layout == SeedLayout::Pair) {
-                        float angle = float(seed_settings.angle), elevation = float(seed_settings.elevation);
-                        if (ImGui::SliderFloat("Pair angle", &angle, -180, 180, "%.1f deg"))
-                            seed_settings.angle = angle;
-                        if (is_volume && ImGui::SliderFloat("Elevation", &elevation, -90, 90, "%.1f deg"))
-                            seed_settings.elevation = elevation;
+                            "Adjust patch count to preserve expected coverage, accounting for the new "
+                            "radius.\nThis creates a new random field; it does not resample the current "
+                            "state.");
+                    ImGui::EndDisabled();
+                    ImGui::InputScalar("Seed", ImGuiDataType_U64, &seed);
+                    int layout = int(seed_settings.layout);
+                    if (ImGui::Combo("Placement", &layout, "Across grid\0Single cluster\0Isolated pair\0")) {
+                        seed_settings.layout = SeedLayout(layout);
+                        if (seed_settings.layout == SeedLayout::Pair)
+                            seed_settings.patches = 2;
                     }
-                    ImGui::TextWrapped("Centred on the grid. Resizing keeps the patch count; spread and size "
-                                       "use the kernel radius.");
-                }
-                float size_min = float(seed_settings.size_min), size_max = float(seed_settings.size_max);
-                if (ImGui::DragFloatRange2("Side / radius", &size_min, &size_max, .01f, .05f, 4.f, "min %.2f",
-                                           "max %.2f", ImGuiSliderFlags_AlwaysClamp)) {
-                    seed_settings.size_min = size_min;
-                    seed_settings.size_max = size_max;
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Each box side is independently random in this range times the kernel "
-                                      "radius.\nValues are rounded down to cells; patches wrap around the "
-                                      "periodic boundary.");
-                float value_min = float(seed_settings.value_min), value_max = float(seed_settings.value_max);
-                if (ImGui::DragFloatRange2("Values", &value_min, &value_max, .01f, 0, 1, "min %.2f",
-                                           "max %.2f", ImGuiSliderFlags_AlwaysClamp)) {
-                    seed_settings.value_min = value_min;
-                    seed_settings.value_max = value_max;
-                }
-                ImGui::TextWrapped(frame && frame->has_initial_field
-                                       ? "Seed controls affect Preview seed, New seed, and Create grid."
-                                       : "Seed controls affect Reset, New seed, and Create grid.");
-                if (ImGui::Button("Ten-patch defaults", {-1, 0}))
-                    seed_settings = SeedSettings{};
-                const auto &current = frame ? frame->state.config : edit;
-                if (ImGui::Button("Preview seed (paused)", {-1, 0})) {
-                    runner.play(false);
-                    runner.randomize(current, seed, seed_settings);
-                }
-                if (seed_settings.layout == SeedLayout::Uniform) {
-                    double coverage = seed_coverage(current, seed_settings);
-                    ImGui::Text("Expected coverage: %.2f%%", 100 * coverage);
-                    ImGui::Text("Expected mean: %.4f",
-                                coverage * (seed_settings.value_min + seed_settings.value_max) / 2);
+                    ImGui::BeginDisabled(seed_settings.layout == SeedLayout::Pair);
+                    ImGui::InputInt("Patches", &seed_settings.patches);
+                    seed_settings.patches = std::clamp(seed_settings.patches, 0, 4096);
+                    ImGui::EndDisabled();
+                    if (seed_settings.layout != SeedLayout::Uniform) {
+                        float spread = float(seed_settings.spread);
+                        if (ImGui::DragFloat(seed_settings.layout == SeedLayout::Pair ? "Separation / R"
+                                                                                      : "Spread / R",
+                                             &spread, .01f, 0, 16, "%.2f", ImGuiSliderFlags_AlwaysClamp))
+                            seed_settings.spread = spread;
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip(
+                                seed_settings.layout == SeedLayout::Pair
+                                    ? "Distance between patch centres, not their edges. Rounded to cells."
+                                    : "Patch centres are random within this radius of the grid centre.");
+                        if (seed_settings.layout == SeedLayout::Pair) {
+                            float angle = float(seed_settings.angle),
+                                  elevation = float(seed_settings.elevation);
+                            if (ImGui::SliderFloat("Pair angle", &angle, -180, 180, "%.1f deg"))
+                                seed_settings.angle = angle;
+                            if (is_volume && ImGui::SliderFloat("Elevation", &elevation, -90, 90, "%.1f deg"))
+                                seed_settings.elevation = elevation;
+                        }
+                        ImGui::TextWrapped(
+                            "Centred on the grid. Resizing keeps the patch count; spread and size "
+                            "use the kernel radius.");
+                    }
+                    float size_min = float(seed_settings.size_min), size_max = float(seed_settings.size_max);
+                    if (ImGui::DragFloatRange2("Side / radius", &size_min, &size_max, .01f, .05f, 4.f,
+                                               "min %.2f", "max %.2f", ImGuiSliderFlags_AlwaysClamp)) {
+                        seed_settings.size_min = size_min;
+                        seed_settings.size_max = size_max;
+                    }
                     if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Statistical estimates including patch overlap; individual seeds "
-                                          "vary.\nOverlapping "
-                                          "patches overwrite values. This is not a prediction of survival.");
+                        ImGui::SetTooltip(
+                            "Each box side is independently random in this range times the kernel "
+                            "radius.\nValues are rounded down to cells; patches wrap around the "
+                            "periodic boundary.");
+                    float value_min = float(seed_settings.value_min),
+                          value_max = float(seed_settings.value_max);
+                    if (ImGui::DragFloatRange2("Values", &value_min, &value_max, .01f, 0, 1, "min %.2f",
+                                               "max %.2f", ImGuiSliderFlags_AlwaysClamp)) {
+                        seed_settings.value_min = value_min;
+                        seed_settings.value_max = value_max;
+                    }
+                    ImGui::TextWrapped(frame && frame->has_initial_field
+                                           ? "Seed controls affect Preview seed, New seed, and Create grid."
+                                           : "Seed controls affect Reset, New seed, and Create grid.");
+                    if (ImGui::Button("Ten-patch defaults", {-1, 0}))
+                        seed_settings = SeedSettings{};
+                    const auto &current = frame ? frame->state.config : edit;
+                    if (ImGui::Button("Preview seed (paused)", {-1, 0})) {
+                        runner.play(false);
+                        runner.randomize(current, seed, seed_settings);
+                    }
+                    if (seed_settings.layout == SeedLayout::Uniform) {
+                        double coverage = seed_coverage(current, seed_settings);
+                        ImGui::Text("Expected coverage: %.2f%%", 100 * coverage);
+                        ImGui::Text("Expected mean: %.4f",
+                                    coverage * (seed_settings.value_min + seed_settings.value_max) / 2);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip(
+                                "Statistical estimates including patch overlap; individual seeds "
+                                "vary.\nOverlapping "
+                                "patches overwrite values. This is not a prediction of survival.");
+                    }
+                    int minimum_side = std::min(current.width, current.height);
+                    if (current.depth > 1)
+                        minimum_side = std::min(minimum_side, current.depth);
+                    if (seed_settings.layout != SeedLayout::Uniform) {
+                        double diameter =
+                            seed_settings.spread * (seed_settings.layout == SeedLayout::Cluster ? 2 : 1);
+                        if ((diameter + seed_settings.size_max) * current.radius + 1 >= minimum_side)
+                            ImGui::TextWrapped("This spread can reach periodic edges. Reduce spread/size or "
+                                               "enlarge the grid for more empty space around it.");
+                    }
+                    int maximum_side = seed_settings.size_min == seed_settings.size_max
+                                           ? int(current.radius * seed_settings.size_max)
+                                           : int(std::ceil(current.radius * seed_settings.size_max)) - 1;
+                    ImGui::Text("Patch sides: %d..%d cells",
+                                std::clamp(int(current.radius * seed_settings.size_min), 1, minimum_side),
+                                std::clamp(maximum_side, 1,
+                                           std::max({current.width, current.height, current.depth})));
+                    if (frame && frame->has_initial_field)
+                        ImGui::TextWrapped(
+                            "Reset restores the loaded or edited starting field and keeps your "
+                            "applied model parameters.");
+                    else if (frame && frame->state.initialization &&
+                             frame->state.initialization_radius != current.radius)
+                        ImGui::TextWrapped(
+                            "This field was seeded at radius %d. Reset uses the current radius %d.",
+                            frame->state.initialization_radius, current.radius);
+                    else if (frame && !frame->state.initialization)
+                        ImGui::TextWrapped(
+                            "This field has no stored seed recipe. Reset uses the controls above.");
+                    Config c = edit;
+                    c.width = c.height = 1 << grid_power;
+                    c.depth = is_volume ? c.width : 1;
+                    if (preferences.scale_radius[is_volume])
+                        c.radius = std::max(1, int(std::round(double(edit.radius) * c.width / edit.width)));
+                    c.radius = std::min(c.radius, c.width / 2);
+                    SeedSettings next = seed_settings;
+                    std::string resize_error;
+                    try {
+                        if (preferences.keep_seed_coverage[is_volume] &&
+                            (c.width != current.width || c.height != current.height ||
+                             c.depth != current.depth))
+                            next = resize_seed_settings(current, c, next);
+                        ImGui::Text("New grid: radius %d, %d patches", c.radius, next.patches);
+                        if (next.layout == SeedLayout::Uniform)
+                            ImGui::Text("Expected coverage: %.2f%%", 100 * seed_coverage(c, next));
+                    } catch (const std::exception &e) {
+                        resize_error = e.what();
+                        ImGui::TextWrapped("%s. Adjust the recipe or disable coverage preservation.",
+                                           resize_error.c_str());
+                    }
+                    ImGui::BeginDisabled(!resize_error.empty());
+                    if (ImGui::Button("Create grid", {-1, 0})) {
+                        runner.randomize(c, seed, next);
+                        dirty_config = false;
+                    }
+                    ImGui::EndDisabled();
                 }
-                int minimum_side = std::min(current.width, current.height);
-                if (current.depth > 1)
-                    minimum_side = std::min(minimum_side, current.depth);
-                if (seed_settings.layout != SeedLayout::Uniform) {
-                    double diameter =
-                        seed_settings.spread * (seed_settings.layout == SeedLayout::Cluster ? 2 : 1);
-                    if ((diameter + seed_settings.size_max) * current.radius + 1 >= minimum_side)
-                        ImGui::TextWrapped("This spread can reach periodic edges. Reduce spread/size or "
-                                           "enlarge the grid for more empty space around it.");
-                }
-                int maximum_side = seed_settings.size_min == seed_settings.size_max
-                                       ? int(current.radius * seed_settings.size_max)
-                                       : int(std::ceil(current.radius * seed_settings.size_max)) - 1;
-                ImGui::Text(
-                    "Patch sides: %d..%d cells",
-                    std::clamp(int(current.radius * seed_settings.size_min), 1, minimum_side),
-                    std::clamp(maximum_side, 1, std::max({current.width, current.height, current.depth})));
-                if (frame && frame->has_initial_field)
-                    ImGui::TextWrapped("Reset restores the loaded or edited starting field and keeps your "
-                                       "applied model parameters.");
-                else if (frame && frame->state.initialization &&
-                         frame->state.initialization_radius != current.radius)
-                    ImGui::TextWrapped(
-                        "This field was seeded at radius %d. Reset uses the current radius %d.",
-                        frame->state.initialization_radius, current.radius);
-                else if (frame && !frame->state.initialization)
-                    ImGui::TextWrapped(
-                        "This field has no stored seed recipe. Reset uses the controls above.");
-                Config c = edit;
-                c.width = c.height = 1 << grid_power;
-                c.depth = is_volume ? c.width : 1;
-                if (preferences.scale_radius[is_volume])
-                    c.radius = std::max(1, int(std::round(double(edit.radius) * c.width / edit.width)));
-                c.radius = std::min(c.radius, c.width / 2);
-                SeedSettings next = seed_settings;
-                std::string resize_error;
-                try {
-                    if (preferences.keep_seed_coverage[is_volume] &&
-                        (c.width != current.width || c.height != current.height || c.depth != current.depth))
-                        next = resize_seed_settings(current, c, next);
-                    ImGui::Text("New grid: radius %d, %d patches", c.radius, next.patches);
-                    if (next.layout == SeedLayout::Uniform)
-                        ImGui::Text("Expected coverage: %.2f%%", 100 * seed_coverage(c, next));
-                } catch (const std::exception &e) {
-                    resize_error = e.what();
-                    ImGui::TextWrapped("%s. Adjust the recipe or disable coverage preservation.",
-                                       resize_error.c_str());
-                }
-                ImGui::BeginDisabled(!resize_error.empty());
-                if (ImGui::Button("Create grid", {-1, 0})) {
-                    runner.randomize(c, seed, next);
-                    dirty_config = false;
-                }
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::TextDisabled("EXPERIMENT");
+                if (ImGui::Button("Pattern gallery", {-1, 0}))
+                    gallery.open();
+                ImGui::BeginDisabled(is_volume);
+                if (ImGui::Button("Edit 2D field", {-1, 0}))
+                    editor.open(runner, views[0]);
                 ImGui::EndDisabled();
-            }
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::TextDisabled("EXPERIMENT");
-            if (ImGui::Button("Pattern gallery", {-1, 0}))
-                gallery.open();
-            ImGui::BeginDisabled(is_volume);
-            if (ImGui::Button("Edit 2D field", {-1, 0}))
-                editor.open(runner, views[0]);
-            ImGui::EndDisabled();
-            if (frame && !frame->state.edits.empty() && ImGui::CollapsingHeader("Field construction"))
-                ImGui::TextUnformatted(frame->state.edits.c_str());
-            if (ImGui::CollapsingHeader("Measurements")) {
-                if (!history.empty())
-                    ImGui::PlotLines("##mean", history.data(), int(history.size()), 0, "Mean activity", 0,
-                                     FLT_MAX, {ImGui::GetContentRegionAvail().x, 80 * dpi});
-                if (frame) {
-                    ImGui::TextWrapped("%s", frame->state.backend.c_str());
-                    if (!frame->gpu)
-                        ImGui::Text("FFT %.2f / %.2f ms\nUpdate %.2f ms", frame->timings.forward_ms,
-                                    frame->timings.inverse_ms, frame->timings.update_ms);
+                if (frame && !frame->state.edits.empty() && ImGui::CollapsingHeader("Field construction"))
+                    ImGui::TextUnformatted(frame->state.edits.c_str());
+                if (ImGui::CollapsingHeader("Measurements")) {
+                    if (!history.empty())
+                        ImGui::PlotLines("##mean", history.data(), int(history.size()), 0, "Mean activity", 0,
+                                         FLT_MAX, {ImGui::GetContentRegionAvail().x, 80 * dpi});
+                    if (frame) {
+                        ImGui::TextWrapped("%s", frame->state.backend.c_str());
+                        if (!frame->gpu)
+                            ImGui::Text("FFT %.2f / %.2f ms\nUpdate %.2f ms", frame->timings.forward_ms,
+                                        frame->timings.inverse_ms, frame->timings.update_ms);
+                    }
                 }
-            }
-            if (ImGui::Button("Save state", {-1, 0})) {
-                auto path = choose_file(window, true);
-                if (!path.empty())
-                    runner.save(path);
-            }
-            if (ImGui::Button("Load state", {-1, 0})) {
-                auto path = choose_file(window, false);
-                if (!path.empty()) {
-                    runner.load(path);
-                    dirty_config = false;
+                if (ImGui::Button("Save state", {-1, 0})) {
+                    auto path = choose_file(window, true);
+                    if (!path.empty())
+                        runner.save(path);
                 }
-            }
-            if (ImGui::Button("Export view", {-1, 0})) {
-                auto path = choose_file(window, true, true);
-                if (!path.empty()) {
-                    renderer.export_bmp(path);
-                    local_message = "Exported " + path;
+                if (ImGui::Button("Load state", {-1, 0})) {
+                    auto path = choose_file(window, false);
+                    if (!path.empty()) {
+                        runner.load(path);
+                        dirty_config = false;
+                    }
                 }
-            }
-            if (ImGui::CollapsingHeader("Workspace")) {
-                ImGui::BeginDisabled(!writer);
-                ImGui::Checkbox("Autosave and restore sessions", &preferences.recovery);
-                ImGui::TextWrapped(
-                    "Both fields are saved every 30 seconds and on close. Reopening starts paused.");
-                if (ImGui::Button(preferences.recovery ? "Save workspace now" : "Save preferences now",
-                                  {-1, 0}) &&
-                    writer) {
-                    writer->request(preferences);
-                    if (preferences.recovery && !recovery_snapshot.valid())
-                        recovery_snapshot = runner.snapshot_sessions();
-                    next_recovery = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                if (ImGui::Button("Export view", {-1, 0})) {
+                    auto path = choose_file(window, true, true);
+                    if (!path.empty()) {
+                        renderer.export_bmp(path);
+                        local_message = "Exported " + path;
+                    }
                 }
-                ImGui::EndDisabled();
-                if (access && !access->writable())
-                    ImGui::TextWrapped("%s", access->message.c_str());
+                if (ImGui::CollapsingHeader("Workspace")) {
+                    ImGui::BeginDisabled(!writer);
+                    ImGui::Checkbox("Autosave and restore sessions", &preferences.recovery);
+                    ImGui::TextWrapped(
+                        "Both fields are saved every 30 seconds and on close. Reopening starts paused.");
+                    if (ImGui::Button(preferences.recovery ? "Save workspace now" : "Save preferences now",
+                                      {-1, 0}) &&
+                        writer) {
+                        writer->request(preferences);
+                        if (preferences.recovery && !recovery_snapshot.valid())
+                            recovery_snapshot = runner.snapshot_sessions();
+                        next_recovery = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                    }
+                    ImGui::EndDisabled();
+                    if (access && !access->writable())
+                        ImGui::TextWrapped("%s", access->message.c_str());
+                }
             }
         } catch (const std::exception &e) {
             local_message = e.what();
         }
         ImGui::PopItemWidth();
         ImGui::EndChild();
+        ImGui::EndChild();
         ImGui::SameLine();
         ImGui::BeginChild("Scene", {0, available_height}, ImGuiChildFlags_Borders);
-        if (frame) {
-            ImGui::Text("%s   %d x %d x %d", is_volume ? "3D LENIA" : "2D LENIA", frame->state.config.width,
-                        frame->state.config.height, frame->state.config.depth);
-            ImGui::SameLine();
-            ImGui::TextDisabled("  t = %.3f   step %llu", frame->state.time,
-                                static_cast<unsigned long long>(frame->state.steps));
-        } else
-            ImGui::Text("Preparing simulation...");
-        ImVec2 image_size = ImGui::GetContentRegionAvail();
-        image_size.y = std::max(1.f, image_size.y - 118 * dpi);
-        image_size.x = std::max(1.f, image_size.x);
-        double draw_submit_ms =
-            draw_viewer("Live viewer", renderer, frame ? frame->state.config : edit, view, image_size, dpi);
-        if (frame) {
-            ImGui::Text("%.1f steps/s    %.2f ms compute    %.0f display fps", frame->steps_per_second,
-                        frame->timings.total_ms, io.Framerate);
-            ImGui::TextDisabled("%.2f ms display preparation    %s", frame->publication_ms,
-                                frame->gpu_image ? "GPU resident" : "CPU transfer");
-            ImGui::TextDisabled("Mean %.5f    range [%.4f, %.4f]    %s", frame->measures.mean,
-                                frame->measures.minimum, frame->measures.maximum,
-                                frame->gpu ? "GPU float" : "CPU double");
+        double draw_submit_ms = 0;
+        if (inspector_tab == 1)
+            draw_submit_ms = study.draw_scene(dpi, close_requested);
+        else {
+            if (frame) {
+                ImGui::Text("%s   %d x %d x %d", is_volume ? "3D LENIA" : "2D LENIA",
+                            frame->state.config.width, frame->state.config.height, frame->state.config.depth);
+                ImGui::SameLine();
+                ImGui::TextDisabled("  t = %.3f   step %llu", frame->state.time,
+                                    static_cast<unsigned long long>(frame->state.steps));
+            } else
+                ImGui::Text("Preparing simulation...");
+            ImVec2 image_size = ImGui::GetContentRegionAvail();
+            image_size.y = std::max(1.f, image_size.y - 118 * dpi);
+            image_size.x = std::max(1.f, image_size.x);
+            draw_submit_ms = draw_viewer("Live viewer", renderer, frame ? frame->state.config : edit, view,
+                                         image_size, dpi);
+            if (frame) {
+                ImGui::Text("%.1f steps/s    %.2f ms compute    %.0f display fps", frame->steps_per_second,
+                            frame->timings.total_ms, io.Framerate);
+                ImGui::TextDisabled("%.2f ms display preparation    %s", frame->publication_ms,
+                                    frame->gpu_image ? "GPU resident" : "CPU transfer");
+                ImGui::TextDisabled("Mean %.5f    range [%.4f, %.4f]    %s", frame->measures.mean,
+                                    frame->measures.minimum, frame->measures.maximum,
+                                    frame->gpu ? "GPU float" : "CPU double");
+            }
+            ImGui::TextDisabled(is_volume && view.view != 0
+                                    ? "Drag to orbit  |  Wheel to zoom  |  Space to play/pause"
+                                    : "Wheel to zoom  |  Space to play/pause");
         }
-        ImGui::TextDisabled(is_volume && view.view != 0
-                                ? "Drag to orbit  |  Wheel to zoom  |  Space to play/pause"
-                                : "Wheel to zoom  |  Space to play/pause");
         ImGui::EndChild();
         ImGui::EndDisabled();
         if (local_message != previous_local_message) {
@@ -834,6 +890,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             ImGui::TextWrapped("Existing complete recovery checkpoints have been preserved.");
             if (ImGui::Button("Retry")) {
                 gallery.retry_save();
+                study.retry_save();
                 closing_stage = 0;
                 ImGui::CloseCurrentPopup();
             }
@@ -843,6 +900,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 closing_stage = 0;
                 if (!gallery.close_error().empty())
                     gallery.open();
+                if (!study.close_error().empty())
+                    requested_tab = 1;
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
@@ -851,7 +910,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             ImGui::EndPopup();
         }
         ImGui::End();
-        gallery.draw(runner, views, dpi, close_requested);
+        gallery.draw(runner, views, study, dpi, close_requested);
         editor.draw(runner, dpi, close_requested);
         ImGui::Render();
         HRESULT present;
@@ -863,6 +922,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
             const float clear[] = {.04f, .05f, .07f, 1};
             context->ClearRenderTargetView(screen.Get(), clear);
             ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+            if (options.gallery_smoke && study.smoke_capture_name())
+                save_backbuffer(device.Get(), context.Get(), swap.Get(), study.smoke_capture_name());
             if (options.editor_smoke && editor.smoke_preview_ready())
                 save_backbuffer(device.Get(), context.Get(), swap.Get(), "editor-ui-smoke.bmp");
             if (smoke && frame && (!options.gallery_smoke || gallery_smoke_done) &&

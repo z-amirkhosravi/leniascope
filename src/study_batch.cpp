@@ -1,14 +1,14 @@
-#include "gallery_panel.h"
 #include "imgui.h"
 #include "study_backend.h"
+#include "study_panel.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <shellapi.h>
 
 namespace lenia {
-std::vector<GalleryPanel::SavedBatch> GalleryPanel::read_batches(const std::filesystem::path &path,
-                                                                 std::vector<std::string> &errors) {
+std::vector<StudyPanel::SavedBatch> StudyPanel::read_batches(const std::filesystem::path &path,
+                                                             std::vector<std::string> &errors) {
     std::vector<SavedBatch> result;
     if (!std::filesystem::exists(path))
         return result;
@@ -24,7 +24,7 @@ std::vector<GalleryPanel::SavedBatch> GalleryPanel::read_batches(const std::file
     std::sort(result.begin(), result.end(), [](const auto &a, const auto &b) { return a.id > b.id; });
     return result;
 }
-void GalleryPanel::begin_batch() {
+void StudyPanel::begin_batch() {
     if (!selected || !writable || busy() || pending_study)
         return;
     batch_plan.values = batch_values(batch_value_text);
@@ -49,7 +49,7 @@ void GalleryPanel::begin_batch() {
         return r;
     });
 }
-void GalleryPanel::batch_field(bool final) {
+void StudyPanel::batch_field(bool final) {
     auto path = root / selected->id / "batches" / batches.at(batch_index).id;
     restore_view = selected->view;
     restore_mode = selected->state.config.depth > 1;
@@ -60,7 +60,7 @@ void GalleryPanel::batch_field(bool final) {
         return r;
     });
 }
-void GalleryPanel::batch_annotation() {
+void StudyPanel::batch_annotation() {
     auto saved = batches.at(batch_index);
     auto path = root / selected->id / "batches" / saved.id;
     job = Job::BatchLabel;
@@ -72,22 +72,24 @@ void GalleryPanel::batch_annotation() {
                           return r;
                       });
 }
-void GalleryPanel::draw_batch(float dpi, bool closing) {
+void StudyPanel::draw_batch(float dpi, bool closing) {
     ImGui::TextWrapped("Compare several parameter values at a fixed step horizon. Every run starts afresh; "
-                       "the live simulation and saved gallery field are unchanged.");
+                       "the live simulation and study source are unchanged.");
     ImGui::SetNextItemOpen(batch_settings_open);
     batch_settings_open = ImGui::CollapsingHeader("Batch settings");
     if (batch_settings_open) {
         ImGui::BeginDisabled(busy() || closing || !writable || bool(pending_study));
         ImGui::BeginDisabled(!selected->state.initialization);
-        if (ImGui::Checkbox("Generate new fields from saved seed recipe", &batch_plan.reseed))
+        if (ImGui::Checkbox("Use seed recipe", &batch_plan.reseed))
             batch_plan.repetitions = batch_plan.reseed ? 3 : 1;
         ImGui::EndDisabled();
         if (batch_plan.reseed) {
-            ImGui::SetNextItemWidth(150 * dpi);
-            ImGui::InputInt("Seeds per value", &batch_plan.repetitions);
-            ImGui::SetNextItemWidth(180 * dpi);
-            ImGui::InputScalar("First seed", ImGuiDataType_U64, &batch_plan.first_seed);
+            ImGui::TextUnformatted("Seeds per value");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputInt("##Seeds per value", &batch_plan.repetitions);
+            ImGui::TextUnformatted("First seed");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputScalar("##First seed", ImGuiDataType_U64, &batch_plan.first_seed);
             ImGui::TextWrapped(
                 "Uses consecutive seeds, paired across parameter values. Patch dimensions "
                 "use each run's kernel radius. This regenerates the recipe, not the saved organism.");
@@ -95,8 +97,8 @@ void GalleryPanel::draw_batch(float dpi, bool closing) {
             ImGui::TextWrapped("Each run uses the exact saved field. Changing R changes the kernel, "
                                "without resizing the field or organism.");
         int axis = int(batch_plan.axis);
-        ImGui::SetNextItemWidth(240 * dpi);
-        if (ImGui::Combo("Vary", &axis,
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("##Vary", &axis,
                          "Growth mean (mu)\0Growth width (sigma)\0Kernel radius\0"
                          "Pair separation / cluster radius (R)\0Pair angle (degrees)\0")) {
             batch_plan.axis = BatchAxis(axis);
@@ -117,14 +119,18 @@ void GalleryPanel::draw_batch(float dpi, bool closing) {
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextWithHint("##batch-values", "Values separated by commas", batch_value_text,
                                  sizeof batch_value_text);
-        ImGui::SetNextItemWidth(150 * dpi);
-        ImGui::InputInt("Steps per run", &batch_plan.observation.steps);
-        ImGui::SetNextItemWidth(150 * dpi);
-        ImGui::InputInt("Measure every", &batch_plan.observation.sample_every);
-        ImGui::SetNextItemWidth(150 * dpi);
-        ImGui::InputDouble("Active above", &batch_plan.observation.activity_threshold, 0, 0, "%.4f");
-        ImGui::SetNextItemWidth(220 * dpi);
-        ImGui::Combo("Batch backend", &study_backend,
+        ImGui::TextUnformatted("Steps per run");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputInt("##Steps per run", &batch_plan.observation.steps);
+        ImGui::TextUnformatted("Measure every");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputInt("##Measure every", &batch_plan.observation.sample_every);
+        ImGui::TextUnformatted("Active above");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputDouble("##Active above", &batch_plan.observation.activity_threshold, 0, 0, "%.4f");
+        ImGui::TextUnformatted("Batch backend");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::Combo("##Batch backend", &study_backend,
 #ifdef LENIA_ENABLE_CUDA
                      "CPU reference\0DirectCompute\0CUDA / cuFFT\0"
 #else
@@ -163,10 +169,12 @@ void GalleryPanel::draw_batch(float dpi, bool closing) {
             (batch_progress.load() + float(study_progress.load()) / batch_plan.observation.steps) /
                 batch_plan.count(),
             {-1, 0});
-        if (ImGui::Button("Stop batch and keep results"))
+        if (ImGui::Button("Stop batch (keep results)"))
             stop_study();
         ImGui::TextWrapped("Stopping waits for the current step, measurement or checkpoint write.");
     }
+}
+void StudyPanel::draw_batch_results(float dpi, bool closing) {
     if (batches.empty())
         return;
     ImGui::Separator();

@@ -1,12 +1,11 @@
 #pragma once
-#include "batch.h"
 #include "gallery.h"
 #include "renderer.h"
 #include "runner.h"
-#include <atomic>
 #include <future>
 
 namespace lenia {
+class StudyPanel;
 class GalleryPanel {
   public:
     GalleryPanel(std::filesystem::path root, bool writable, std::shared_ptr<GpuContext>);
@@ -21,39 +20,19 @@ class GalleryPanel {
     }
     void retry_save() {
         if (!write_error.empty() && !busy())
-            pending_study ? save_study() : save();
-    }
-    void stop_study() {
-        study_stop = true;
+            save();
     }
     void tick(Runner &, std::array<ViewSettings, 2> &);
-    void draw(Runner &, const std::array<ViewSettings, 2> &, float dpi, bool closing);
+    void draw(Runner &, const std::array<ViewSettings, 2> &, StudyPanel &, float dpi, bool closing);
     // App-owned smoke path exercises the same capture/save/select/restore operations as the controls.
-    bool smoke(Runner &, const std::array<ViewSettings, 2> &);
+    bool smoke(Runner &, const std::array<ViewSettings, 2> &, StudyPanel &);
 
   private:
-    struct SavedBatch {
-        std::string id;
-        BatchResult result;
-    };
-    struct ShapeMeasurement {
-        Morphology shape;
-        double threshold = .01;
-        std::vector<ShapeComponent> components;
-        std::vector<uint32_t> order; // IDs, largest first; colors use IDs rather than display rank.
-        std::unique_ptr<Renderer> renderer;
-    };
     struct Result {
         GalleryCatalog catalog;
         std::optional<GalleryEntry> entry;
         std::optional<GalleryPreview> preview;
         std::optional<State> state;
-        std::optional<BehaviorReport> report;
-        std::optional<GalleryStudies> studies;
-        std::optional<std::vector<SavedBatch>> batches;
-        std::optional<SavedBatch> batch;
-        std::optional<ShapeMeasurement> shape;
-        std::string studies_source;
     };
     enum class Job {
         None,
@@ -61,12 +40,7 @@ class GalleryPanel {
         Select,
         Save,
         Edit,
-        Load,
-        Study,
-        SaveStudy,
-        Batch,
-        BatchLabel,
-        Shape
+        Load
     } job = Job::None;
     std::filesystem::path root;
     bool writable, opened = false, editing = false;
@@ -90,37 +64,6 @@ class GalleryPanel {
     int dimension_filter = 0, smoke_phase = 0;
     std::string smoke_signature;
     std::future<State> smoke_check;
-    BehaviorOptions study_options;
-    bool study_settings_open = true;
-    bool study_zoom = false;
-    int study_backend = 0, study_index = 0;
-    GalleryStudies studies;
-    std::optional<BehaviorReport> pending_study;
-    std::atomic<bool> study_stop{false};
-    std::atomic<int> study_progress{0};
-    BatchPlan batch_plan;
-    bool batch_settings_open = true;
-    std::vector<SavedBatch> batches;
-    int batch_index = 0, batch_run = 0;
-    char batch_value_text[2048] = "0.14, 0.15, 0.16", batch_label[257]{};
-    std::atomic<int> batch_progress{0};
-    double shape_threshold = .01;
-    std::optional<ShapeMeasurement> shape;
-    ViewSettings shape_view;
-    uint32_t shape_component = 0;
-    bool shape_scalar = false;
-    void begin_shape();
-    void draw_components(float dpi);
-    void draw_shape(float dpi, bool closing);
-    static void draw_shape_summary(const std::optional<Morphology> &, const Config &, double threshold);
-    void begin_batch();
-    void draw_batch(float dpi, bool closing);
-    void batch_field(bool final);
-    void batch_annotation();
-    static std::vector<SavedBatch> read_batches(const std::filesystem::path &, std::vector<std::string> &);
-    void begin_study();
-    void save_study();
-    void draw_study(float dpi, bool closing);
     void scan();
     void select(std::string);
     void begin_capture(Runner &, const std::array<ViewSettings, 2> &);

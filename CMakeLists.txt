@@ -56,11 +56,13 @@ if(WIN32)
     copy_fftw(Leniascope)
     copy_fftw(LeniascopeCli)
     if(BUILD_TESTING)
-        add_executable(ViewerTests tests/viewer_tests.cpp src/viewer.cpp src/renderer.cpp cmap.cpp
+        add_executable(ViewerTests tests/viewer_tests.cpp tests/study_ui_tests.cpp src/desktop_workspace.cpp
+            src/study_panel.cpp src/study_shape.cpp src/study_behavior.cpp src/study_batch.cpp
+            src/viewer.cpp src/renderer.cpp cmap.cpp
             third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
             third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp)
         target_include_directories(ViewerTests PRIVATE third_party/imgui)
-        target_link_libraries(ViewerTests PRIVATE lenia_gpu)
+        target_link_libraries(ViewerTests PRIVATE lenia_gpu shell32)
         copy_fftw(ViewerTests)
         add_test(NAME viewer COMMAND ViewerTests)
         add_executable(RenderTests tests/render_tests.cpp src/renderer.cpp cmap.cpp)

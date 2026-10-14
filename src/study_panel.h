@@ -15,6 +15,16 @@ class StudyPanel {
     ~StudyPanel();
     bool busy() const;
     bool can_change_source() const;
+    bool showing_source() const {
+        return viewing_source && selected && source_renderer;
+    }
+    void show_current() {
+        viewing_source = false;
+    }
+    void allow_saving() {
+        writable = true;
+    }
+    void draw_simulation_actions(bool closing);
     void use_current(Runner &, const std::array<ViewSettings, 2> &);
     void open_source(std::filesystem::path, std::string);
     void tick(Runner &, std::array<ViewSettings, 2> &);
@@ -72,6 +82,7 @@ class StudyPanel {
     Job job = Job::None;
     std::filesystem::path archive_root, root;
     bool writable, activate = false, simulation_requested = false, results_requested = false;
+    bool viewing_source = false;
     std::shared_ptr<GpuContext> gpu;
     GalleryCatalog archive;
     std::optional<GalleryEntry> selected;

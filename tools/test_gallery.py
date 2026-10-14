@@ -102,7 +102,7 @@ def exercise(root):
             for a, b in zip(actual[2:], settings.splitlines()[2:]):
                 assert len(a.split()) == len(b.split())
                 assert all(abs(float(x)-float(y)) < 1e-6 for x,y in zip(a.split(), b.split()))
-            for screen in ['ui-smoke.bmp', 'study-behavior-ui.bmp', 'study-batch-ui.bmp']:
+            for screen in ['ui-smoke.bmp', 'study-current-ui.bmp', 'study-behavior-ui.bmp', 'study-batch-ui.bmp']:
                 assert (case / screen).stat().st_size > 10000
             for image in ['shape-components.bmp', 'shape-largest.bmp']:
                 bitmap = (profile / image).read_bytes()

@@ -54,13 +54,25 @@ WorkspaceAccess::WorkspaceAccess(const std::filesystem::path &override_directory
         directory = std::filesystem::path(text.data()) / L"Leniascope" / L"Laboratory";
     } else
         directory = std::filesystem::absolute(override_directory);
+    retry();
+}
+bool WorkspaceAccess::retry() {
+    if (writable())
+        return true;
     std::error_code error;
     std::filesystem::create_directories(directory, error);
     if (!error)
         lock = CreateFileW((directory / L"workspace.lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                            OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
-    if (!writable())
-        message = "Workspace is read-only or open in another window. Automatic saving is disabled here.";
+    const auto failure = error ? DWORD(error.value()) : GetLastError();
+    if (writable())
+        message.clear();
+    else if (failure == ERROR_SHARING_VIOLATION || failure == ERROR_LOCK_VIOLATION)
+        message = "Another Leniascope window is using this workspace. Close that window, then retry access.";
+    else
+        message = "Cannot save to this workspace (error " + std::to_string(failure) +
+                  "). Check folder access, then retry.";
+    return writable();
 }
 WorkspaceAccess::~WorkspaceAccess() {
     if (writable())

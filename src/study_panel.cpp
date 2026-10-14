@@ -3,12 +3,21 @@
 #include "viewer.h"
 #include <algorithm>
 #include <cstdio>
+#include <ctime>
 #include <utility>
 
 namespace lenia {
 namespace {
 template <class T> bool ready(std::future<T> &f) {
     return f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+std::string snapshot_label(const GalleryEntry &entry) {
+    const auto created = static_cast<time_t>(entry.created);
+    tm local{};
+    localtime_s(&local, &created);
+    char date[40];
+    std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", &local);
+    return std::string(date) + " / " + (entry.state.config.depth > 1 ? "3D" : "2D");
 }
 } // namespace
 StudyPanel::StudyPanel(std::filesystem::path path, bool can_write, std::shared_ptr<GpuContext> context)
@@ -44,7 +53,7 @@ void StudyPanel::use_current(Runner &runner, const std::array<ViewSettings, 2> &
         return;
     capture_views = views;
     capture = runner.capture_current();
-    message = "Pausing and capturing the current field...";
+    message.clear();
     activate = true;
 }
 void StudyPanel::save_capture() {
@@ -78,7 +87,7 @@ void StudyPanel::open_source(std::filesystem::path path, std::string id) {
     if (!can_change_source())
         return;
     activate = true;
-    message = "Opening study source...";
+    message.clear();
     job = Job::Select;
     work = std::async(std::launch::async, [path, id, context = gpu] {
         Result r;
@@ -126,7 +135,7 @@ void StudyPanel::reset_source() {
                   selected->state.config.mu + .01);
 }
 void StudyPanel::restore_source() {
-    restore_view = selected->view;
+    restore_view = shape_view;
     restore_mode = selected->state.config.depth > 1;
     job = Job::Load;
     work = std::async(std::launch::async, [path = root, id = selected->id] {
@@ -160,6 +169,8 @@ void StudyPanel::tick(Runner &runner, std::array<ViewSettings, 2> &views) {
                 root = std::move(result.source_root);
                 source_renderer = std::move(result.renderer);
                 reset_source();
+                viewing_source = true;
+                runner.play(false); // Explicit snapshot selection pauses the now-hidden simulation.
                 message.clear();
             }
             if (completed == Job::Capture) {
@@ -218,6 +229,7 @@ void StudyPanel::tick(Runner &runner, std::array<ViewSettings, 2> &views) {
         if (ready(restore)) {
             restore.get();
             views[restore_mode] = restore_view;
+            viewing_source = false;
             simulation_requested = true;
             message = "Loaded field into Simulation, paused. Reset restores that field.";
         }
@@ -232,33 +244,68 @@ void StudyPanel::tick(Runner &runner, std::array<ViewSettings, 2> &views) {
 }
 void StudyPanel::draw_controls(Runner &runner, const std::array<ViewSettings, 2> &views, float dpi,
                                bool closing) {
-    ImGui::BeginDisabled(!can_change_source() || closing || !writable);
-    if (ImGui::Button("Use current field", {-1, 0}))
-        use_current(runner, views);
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Pause and capture the simulation at a step boundary.\nThe study snapshot is kept "
-                          "separately from the pattern gallery.");
-    ImGui::BeginDisabled(!can_change_source() || closing);
+    // Selecting a panel never selects a different field. Only these explicit source actions do.
+    const std::string label =
+        showing_source()
+            ? (root == archive_root ? snapshot_label(*selected) : "Gallery: " + selected->annotation.title)
+            : "Current simulation";
     ImGui::SetNextItemWidth(-1);
-    if (ImGui::BeginCombo("##Recent sources", "Recent study snapshots")) {
-        for (const auto &entry : archive.entries) {
-            ImGui::PushID(entry.id.c_str());
-            if (ImGui::Selectable(entry.annotation.title.c_str(),
-                                  selected && root == archive_root && selected->id == entry.id))
-                open_source(archive_root, entry.id);
-            ImGui::PopID();
+    if (ImGui::BeginCombo("##Study field", label.c_str())) {
+        if (ImGui::Selectable("Current simulation", !showing_source()))
+            show_current();
+        if (selected && root != archive_root &&
+            ImGui::Selectable(("Gallery: " + selected->annotation.title).c_str(), showing_source())) {
+            runner.play(false);
+            viewing_source = true;
         }
-        if (archive.entries.empty())
-            ImGui::TextDisabled("No study snapshots yet");
+        if (!archive.entries.empty()) {
+            ImGui::SeparatorText("Saved snapshots");
+            for (const auto &entry : archive.entries) {
+                ImGui::PushID(entry.id.c_str());
+                const bool retained = selected && root == archive_root && selected->id == entry.id;
+                ImGui::BeginDisabled(closing || (!retained && !can_change_source()));
+                if (ImGui::Selectable(snapshot_label(entry).c_str(), showing_source() && retained)) {
+                    if (retained) {
+                        runner.play(false);
+                        viewing_source = true;
+                    } else
+                        open_source(archive_root, entry.id);
+                }
+                ImGui::EndDisabled();
+                ImGui::PopID();
+            }
+        }
         ImGui::EndCombo();
     }
-    ImGui::EndDisabled();
-    if (!writable)
-        ImGui::TextWrapped("Read-only workspace: saved sources can be inspected, but new snapshots and runs "
-                           "cannot be saved.");
-    if (busy())
-        ImGui::TextColored({.38f, .85f, .77f, 1}, "Working...");
+    if (showing_source()) {
+        ImGui::BeginDisabled(!can_change_source() || closing);
+        if (ImGui::Button("Load into Simulation", {-1, 0}))
+            restore_source();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Replace the simulation with this snapshot, paused. Reset will return to it.");
+    } else {
+        ImGui::BeginDisabled(!can_change_source() || closing || !writable || archive_root.empty());
+        if (ImGui::Button("Take snapshot", {-1, 0}))
+            use_current(runner, views);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Pause and save this field for measurement and experiments.");
+        if (!writable || archive_root.empty())
+            ImGui::TextWrapped("Snapshot saving is unavailable until workspace access is restored.");
+    }
+    if (busy()) {
+        const char *action = capture.valid()                       ? "Pausing and capturing..."
+                             : job == Job::Scan                    ? "Reading saved snapshots..."
+                             : job == Job::Capture                 ? "Saving snapshot..."
+                             : job == Job::Select                  ? "Opening snapshot..."
+                             : job == Job::Load || restore.valid() ? "Loading simulation..."
+                             : job == Job::Shape                   ? "Measuring shape..."
+                             : job == Job::Study                   ? "Running behavior study..."
+                             : job == Job::Batch                   ? "Running batch..."
+                                                                   : "Saving results...";
+        ImGui::TextColored({.38f, .85f, .77f, 1}, "%s", action);
+    }
     if (!message.empty())
         ImGui::TextWrapped("%s", message.c_str());
     if ((!write_error.empty() || pending_study || captured) && !busy()) {
@@ -270,9 +317,11 @@ void StudyPanel::draw_controls(Runner &runner, const std::array<ViewSettings, 2>
             write_error.clear();
         }
     }
-    if (!selected) {
-        ImGui::TextWrapped(
-            "Use the current field, reopen a recent snapshot, or choose Study this pattern in the gallery.");
+    for (const auto &error : archive.errors)
+        ImGui::TextWrapped("Snapshot skipped: %s", error.c_str());
+    if (!showing_source()) {
+        if ((job == Job::Study || job == Job::Batch) && ImGui::Button("Stop and keep partial results"))
+            stop_study();
         return;
     }
     ImGui::Separator();
@@ -290,33 +339,37 @@ void StudyPanel::draw_controls(Runner &runner, const std::array<ViewSettings, 2>
         if (ImGui::Button("Stop and keep partial results"))
             stop_study();
     }
-    if (ImGui::CollapsingHeader("Source details")) {
-        const auto &s = selected->state;
-        ImGui::Text("%d x %d x %d; R %d", s.config.width, s.config.height, s.config.depth, s.config.radius);
-        ImGui::Text("mu %.6g; sigma %.6g; dt %.6g", s.config.mu, s.config.sigma, s.config.dt);
-        ImGui::TextWrapped("Captured with %s", s.backend.c_str());
-        ImGui::TextWrapped("Source: %s", root == archive_root ? "study snapshot" : "pattern gallery");
-        ImGui::BeginDisabled(!can_change_source() || closing);
-        if (ImGui::Button("Load source into Simulation"))
-            restore_source();
-        ImGui::EndDisabled();
-    }
-    for (const auto &error : archive.errors)
-        ImGui::TextWrapped("Snapshot skipped: %s", error.c_str());
+}
+void StudyPanel::draw_simulation_actions(bool closing) {
+    ImGui::BeginDisabled(!can_change_source() || closing);
+    if (ImGui::Button("Load into Simulation", {-1, 0}))
+        restore_source();
+    ImGui::EndDisabled();
+    if (ImGui::Button("Show current simulation", {-1, 0}))
+        show_current();
+    if (job == Job::Study || job == Job::Batch) {
+        if (ImGui::Button("Stop and keep partial results"))
+            stop_study();
+    } else if (busy())
+        ImGui::TextDisabled("Finishing study operation...");
+    else if (!can_change_source())
+        ImGui::TextWrapped("Save or discard the unsaved result in Study first.");
 }
 double StudyPanel::draw_scene(float dpi, bool closing) {
-    ImGui::TextDisabled("STUDY / FIXED SNAPSHOT");
-    if (!selected || !source_renderer) {
-        ImGui::TextWrapped(
-            "Choose a study source in the left panel. Its full-size viewer and results appear here.");
+    if (!showing_source())
         return 0;
-    }
-    ImGui::TextWrapped("%s", selected->annotation.title.c_str());
+    const auto &state = selected->state;
+    const auto title = root == archive_root ? snapshot_label(*selected) : selected->annotation.title;
+    ImGui::Text("Snapshot: %s", title.c_str());
+    ImGui::Text("%s   %d x %d x %d", state.config.depth > 1 ? "3D LENIA" : "2D LENIA", state.config.width,
+                state.config.height, state.config.depth);
+    ImGui::SameLine();
+    ImGui::TextDisabled("  t = %.3f   step %llu", state.time, static_cast<unsigned long long>(state.steps));
     double submit = 0;
     auto field = [&] {
         auto size = ImGui::GetContentRegionAvail();
         size.x = std::max(1.f, size.x);
-        size.y = std::max(1.f, size.y);
+        size.y = std::max(1.f, size.y - 118 * dpi); // Match the simulation viewport across capture/load.
         ViewerOptions options;
         Renderer *renderer = source_renderer.get();
         if (tool == 0 && shape) {

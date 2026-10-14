@@ -11,6 +11,9 @@ class GalleryPanel {
     GalleryPanel(std::filesystem::path root, bool writable, std::shared_ptr<GpuContext>);
     ~GalleryPanel();
     void open();
+    void allow_saving() {
+        writable = true;
+    }
     bool active() const {
         return opened;
     }

@@ -9,6 +9,7 @@
 #include "runner.h"
 #include "study_panel.h"
 #include "viewer.h"
+#include "workspace_ui.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -194,6 +195,8 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                                 1440, 940, nullptr, nullptr, instance, nullptr);
     if (!window)
         throw std::runtime_error("Cannot create window");
+    if (access && !writer)
+        SetWindowTextW(window, L"Leniascope | Laboratory (read-only)");
     auto gpu_context = std::make_shared<GpuContext>();
     auto device = gpu_context->device;
     auto context = gpu_context->context;
@@ -505,11 +508,11 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         ImGui::TextDisabled(" /  laboratory");
         ImGui::SameLine(300 * dpi);
         ImGui::BeginDisabled(close_requested || !frame || editor.active());
-        ImGui::BeginDisabled(inspector_tab == 1);
+        ImGui::BeginDisabled(study.showing_source());
         try {
             if (ImGui::Button(frame && frame->running ? "Pause" : "Play", {88 * dpi, 0}) ||
-                (frame && inspector_tab == 0 && !close_requested && !gallery.active() && !editor.active() &&
-                 ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                (frame && !study.showing_source() && !close_requested && !gallery.active() &&
+                 !editor.active() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
                  !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
                  ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantTextInput))
                 runner.play(!(frame && frame->running));
@@ -543,27 +546,32 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         float available_height = std::max(100.f, ImGui::GetContentRegionAvail().y - status_height);
         float panel_width = std::min(320 * dpi, display.x * .36f);
         ImGui::BeginChild("Inspector", {panel_width, available_height}, ImGuiChildFlags_Borders);
-        if (ImGui::BeginTabBar("Inspector tabs")) {
-            if (ImGui::BeginTabItem("Simulation", nullptr,
-                                    requested_tab == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
-                inspector_tab = 0;
-                ImGui::EndTabItem();
+        draw_inspector_tabs(inspector_tab, requested_tab);
+        requested_tab = -1;
+        if (access && !writer) {
+            ImGui::TextWrapped("%s", access->message.c_str());
+            if (ImGui::Button("Retry workspace access", {-1, 0})) {
+                try {
+                    if (access->retry()) {
+                        writer = std::make_unique<WorkspaceWriter>(access->directory);
+                        gallery.allow_saving();
+                        study.allow_saving();
+                        SetWindowTextW(window, L"Leniascope | Laboratory");
+                        local_message = "Workspace access restored.";
+                    }
+                } catch (const std::exception &e) {
+                    access->message = e.what();
+                }
             }
-            if (ImGui::BeginTabItem("Study", nullptr,
-                                    requested_tab == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
-                if (inspector_tab != 1)
-                    runner.play(false);
-                inspector_tab = 1;
-                ImGui::EndTabItem();
-            }
-            ImGui::EndTabBar();
-            requested_tab = -1;
+            ImGui::Separator();
         }
         ImGui::BeginChild(inspector_tab == 0 ? "Simulation controls" : "Study controls", {0, 0});
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * .60f);
         try {
             if (inspector_tab == 1)
                 study.draw_controls(runner, views, dpi, close_requested);
+            else if (study.showing_source())
+                study.draw_simulation_actions(close_requested);
             else {
                 ImGui::TextDisabled("SIMULATION");
                 int mode = is_volume ? 1 : 0;
@@ -836,9 +844,10 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
         ImGui::SameLine();
         ImGui::BeginChild("Scene", {0, available_height}, ImGuiChildFlags_Borders);
         double draw_submit_ms = 0;
-        if (inspector_tab == 1)
+        if (study.showing_source())
             draw_submit_ms = study.draw_scene(dpi, close_requested);
         else {
+            ImGui::TextUnformatted("Current simulation");
             if (frame) {
                 ImGui::Text("%s   %d x %d x %d", is_volume ? "3D LENIA" : "2D LENIA",
                             frame->state.config.width, frame->state.config.height, frame->state.config.depth);

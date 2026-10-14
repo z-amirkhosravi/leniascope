@@ -30,11 +30,24 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>$(ProjectDir)..\fftw_lib\64bit\libfftw3-3.lib;d3d11.lib;dxgi.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(ProjectDir)..\fftw_lib\64bit\libfftw3-3.lib;d3d11.lib;dxgi.lib;d3dcompiler.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="viewer_tests.cpp" />
+    <ClCompile Include="study_ui_tests.cpp" />
+    <ClCompile Include="..\src\study_panel.cpp" />
+    <ClCompile Include="..\src\study_shape.cpp" />
+    <ClCompile Include="..\src\study_behavior.cpp" />
+    <ClCompile Include="..\src\study_batch.cpp" />
+    <ClCompile Include="..\src\gallery.cpp" />
+    <ClCompile Include="..\src\behavior.cpp" />
+    <ClCompile Include="..\src\morphology.cpp" />
+    <ClCompile Include="..\src\batch.cpp" />
+    <ClCompile Include="..\src\numerics.cpp" />
+    <ClCompile Include="..\src\runner.cpp" />
+    <ClCompile Include="..\src\gpu_solver.cpp" />
+    <ClCompile Include="..\src\desktop_workspace.cpp" />
     <ClCompile Include="..\third_party\imgui\imgui.cpp" />
     <ClCompile Include="..\third_party\imgui\imgui_draw.cpp" />
     <ClCompile Include="..\third_party\imgui\imgui_tables.cpp" />

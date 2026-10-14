@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #ifdef _WIN32
 #include "src/desktop_workspace.h"
@@ -29,8 +30,15 @@ void workspace_tests() {
     } cleanup{directory};
 #ifdef _WIN32
     {
-        WorkspaceAccess first(directory), second(directory);
-        check(first.writable() && !second.writable(), "Concurrent windows can overwrite one workspace");
+        auto first = std::make_unique<WorkspaceAccess>(directory);
+        WorkspaceAccess second(directory);
+        check(first->writable() && !second.writable(), "Concurrent windows can overwrite one workspace");
+        check(!second.retry() && second.message.find("Another Leniascope window") != std::string::npos,
+              "Locked workspace did not explain the blocker");
+        first.reset();
+        check(second.retry() && second.message.empty(), "Read-only window could not recover write access");
+        WorkspaceAccess third(directory);
+        check(!third.writable(), "Retry did not retain exclusive workspace access");
     }
     {
         WorkspaceAccess next(directory);

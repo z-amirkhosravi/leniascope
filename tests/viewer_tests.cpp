@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 using namespace lenia;
+void study_ui_tests();
 namespace {
 void require(bool b, const char *message) {
     if (!b)
@@ -230,6 +231,7 @@ void tests() {
 int main() {
     try {
         tests();
+        study_ui_tests();
         std::cout << "PASS shared viewer: non-modal inspectors, move/close/reopen/resize, orbit and "
                      "zoom with controls open, input ownership, mode/slice controls, persistence and locked "
                      "comparison\n";

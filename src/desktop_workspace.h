@@ -17,6 +17,7 @@ class WorkspaceAccess {
     WorkspaceAccess &operator=(const WorkspaceAccess &) = delete;
     std::filesystem::path directory;
     std::string message;
+    bool retry();
     bool writable() const {
         return lock != INVALID_HANDLE_VALUE;
     }

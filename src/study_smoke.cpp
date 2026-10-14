@@ -23,7 +23,10 @@ std::string signature(const State &s) {
 const char *StudyPanel::smoke_capture_name() const {
     if (smoke_wait != 4)
         return nullptr;
-    return smoke_phase == 6 ? "study-behavior-ui.bmp" : smoke_phase == 9 ? "study-batch-ui.bmp" : nullptr;
+    return smoke_phase == 6    ? "study-behavior-ui.bmp"
+           : smoke_phase == 9  ? "study-batch-ui.bmp"
+           : smoke_phase == 19 ? "study-current-ui.bmp"
+                               : nullptr;
 }
 bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views) {
     if (busy())
@@ -40,7 +43,7 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
     std::ofstream("gallery-smoke.log", std::ios::app)
         << GetTickCount64() << " study phase " << smoke_phase << " direct=" << smoke_current << '\n';
     // Let the actual Results tab settle before capturing its layout, for both source types.
-    if (smoke_phase == 6 || smoke_phase == 9) {
+    if (smoke_phase == 6 || smoke_phase == 9 || smoke_phase == 19) {
         if (smoke_wait++ < 5)
             return false;
         smoke_wait = 0;
@@ -121,6 +124,7 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
         if (signature(smoke_check.get()) != smoke_signature)
             throw std::runtime_error("Could not return to gallery source after batch inspection");
         tool = 0;
+        viewing_source = true;
         activate = true;
         begin_shape();
         ++smoke_phase;
@@ -145,6 +149,11 @@ bool StudyPanel::smoke(Runner &runner, const std::array<ViewSettings, 2> &views)
             break;
         }
         viewer_ui.controls_open = true; // Include the floating inspector in the final UI capture.
+        show_current();
+        smoke_phase = 19;
+        break;
+    case 19:
+        viewing_source = true;
         ++smoke_phase;
         return true;
     case 18:

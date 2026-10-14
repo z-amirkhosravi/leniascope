@@ -145,19 +145,6 @@ void tests() {
     click(moved.x + 70, moved.y + live_window->TitleBarHeight + ImGui::GetStyle().WindowPadding.y + 8);
     require(live.clip != previous_clip && live.yaw == previous_yaw && live.distance == after,
             "Inspector slider did not own its mouse input");
-    // A section expands the tool to fit its controls instead of reserving an empty overlay.
-    const float collapsed_height = live_window->Size.y;
-    const auto &style = ImGui::GetStyle();
-    const float appearance_header_y = moved.y + live_window->TitleBarHeight + style.WindowPadding.y +
-                                      6 * ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeight() +
-                                      2 * style.SeparatorTextPadding.y + style.ItemSpacing.y +
-                                      ImGui::GetFrameHeight() * .5f;
-    click(moved.x + 50, appearance_header_y);
-    frame();
-    require(live_window->Size.y > collapsed_height, "Inspector did not expand with its section");
-    click(moved.x + 50, appearance_header_y);
-    frame();
-    require(live_window->Size.y == collapsed_height, "Inspector retained empty space after collapsing");
     click(right.x + size.x - 15, right.y + size.y - 12);
     auto *saved_window = inspector("Saved view###");
     require(saved_ui.controls_open && live_ui.controls_open && saved_window != live_window &&

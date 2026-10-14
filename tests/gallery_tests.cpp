@@ -234,6 +234,98 @@ void gallery_tests(bool cpu_only) {
     rejects([&] { runner.restore(malformed).get(); });
     check(runner.capture_current().get().values == constant.values,
           "Failed restore replaced current session");
+    // Gallery, checkpoint and editor loads establish a per-mode initial field.
+    int backends = cpu_only ? 1 : 2;
+#ifdef LENIA_ENABLE_CUDA
+    if (!cpu_only)
+        ++backends;
+#endif
+    for (int backend = 0; backend < backends; ++backend) {
+        auto pattern2 = random_state({16, 16, 1, 3}, 831);
+        auto pattern3 = random_state({8, 8, 8, 3}, 912);
+        for (auto *pattern : {&pattern2, &pattern3}) {
+            for (auto &value : pattern->values)
+                value = double(float(value));
+            pattern->steps = 17;
+            pattern->time = 1.7;
+            pattern->initialization.reset();
+            pattern->edits = "Constructed initial-field fixture";
+        }
+        SessionStates initial;
+        initial[1] = std::make_shared<State>(pattern3);
+        Runner experiment(backend != 0, initial, true, {}, {}, {}, backend == 2);
+        experiment.restore(pattern2).get();
+        experiment.step();
+        auto evolved = experiment.capture_current().get();
+        check(evolved.values != pattern2.values, "Reset fixture did not evolve");
+        auto changed = pattern2.config;
+        changed.radius = 4;
+        changed.mu = .19;
+        changed.dt = .05;
+        experiment.parameters(changed);
+        experiment.reset(9999); // Must see the preceding parameters without a UI frame round-trip.
+        auto replay = experiment.capture_current().get();
+        check(replay.values == pattern2.values && replay.steps == 17 && replay.time == 1.7 &&
+                  replay.config == changed && replay.edits == pattern2.edits &&
+                  experiment.frame()->has_initial_field && experiment.frame()->gpu == (backend != 0),
+              "Reset did not restore the exact loaded field with current parameters/counters");
+        auto invalid = pattern2;
+        invalid.values.pop_back();
+        rejects([&] { experiment.restore(invalid).get(); });
+        experiment.load("missing-reset-test-checkpoint.lenia");
+        experiment.step();
+        experiment.reset(0);
+        check(experiment.capture_current().get().values == pattern2.values,
+              "Failed load or restore damaged the starting field");
+        experiment.restore(pattern3).get();
+        experiment.step();
+        experiment.mode(false);
+        experiment.step();
+        auto sessions = experiment.pause_and_snapshot().get();
+        check(sessions.reset_states[0]->values == pattern2.values &&
+                  sessions.reset_states[1]->values == pattern3.values &&
+                  sessions.states[0]->values != pattern2.values &&
+                  sessions.states[1]->values != pattern3.values,
+              "Independent initial fields or evolved sessions were lost");
+        Runner reopened(backend != 0, sessions.states, false, {}, {}, {}, backend == 2,
+                        sessions.reset_states);
+        reopened.reset(0);
+        check(reopened.capture_current().get().values == pattern2.values,
+              "Reopened session lost the original starting field");
+        reopened.mode(true);
+        reopened.reset(0);
+        check(reopened.capture_current().get().values == pattern3.values,
+              "Mode switch lost 3D initial field");
+        reopened.backend(false);
+        reopened.reset(0);
+        check(reopened.capture_current().get().values == pattern3.values,
+              "Backend change lost the initial field");
+        reopened.randomize(pattern3.config, 783);
+        reopened.step();
+        reopened.reset(783);
+        auto randomized = reopened.pause_and_snapshot().get();
+        check(!randomized.reset_states[1] && randomized.reset_states[0] &&
+                  randomized.states[1]->values == random_state(pattern3.config, 783).values &&
+                  !reopened.frame()->has_initial_field,
+              "New seed retained an old initial field or broke random Reset");
+        auto checkpoint_path = root / "reset-load.lenia";
+        save_state(pattern3, checkpoint_path.u8string());
+        reopened.load(checkpoint_path.u8string());
+        reopened.step();
+        reopened.reset(0);
+        check(reopened.capture_current().get().values == pattern3.values,
+              "Checkpoint load did not establish a new starting field");
+    }
+    // Switching to float32 is explicit, but Reset must still recover a float64 source exactly.
+    if (!cpu_only) {
+        runner.backend(true);
+        runner.step();
+        runner.reset(0);
+        check(runner.capture_current().get().values == constant.values && !runner.frame()->gpu,
+              "Reset narrowed the original float64 initial field after a backend change");
+    }
+    std::cout << "PASS loaded-field Reset, retained model parameters, failed loads, per-mode initials, "
+                 "session reopening, backend transitions, New seed and checkpoint loading\n";
 #endif
     std::cout << "PASS gallery exact fields/provenance/views/previews, annotation edits, independent "
                  "entries, corruption isolation, interrupted writes and validation\n";

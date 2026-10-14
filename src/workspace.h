@@ -13,6 +13,7 @@ using SessionStates = std::array<std::shared_ptr<const State>, 2>;
 struct SessionSnapshot {
     SessionStates states;
     bool volume = true;
+    SessionStates reset_states;
 };
 struct Preferences {
     std::array<ViewSettings, 2> views;
@@ -31,6 +32,7 @@ Preferences decode_preferences(const std::string &);
 struct RestoredWorkspace {
     Preferences preferences;
     SessionStates states;
+    SessionStates reset_states;
     uint64_t revision = 0;
     std::string message;
 };

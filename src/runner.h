@@ -16,14 +16,15 @@ struct Frame {
     Timings timings;
     Measures measures;
     uint64_t serial = 0, generation = 0, initialization_revision = 0;
-    bool running = false, gpu = false, cuda = false;
+    bool running = false, gpu = false, cuda = false, has_initial_field = false;
     double steps_per_second = 0;
 };
 class Runner {
   public:
     explicit Runner(bool prefer_gpu = true, SessionStates initial = {}, bool initial_volume = true,
                     std::function<void()> notify_frame = {}, std::shared_ptr<GpuContext> display_context = {},
-                    std::array<SeedSettings, 2> seeds = {}, bool prefer_cuda = false);
+                    std::array<SeedSettings, 2> seeds = {}, bool prefer_cuda = false,
+                    SessionStates reset_states = {});
     ~Runner();
     Runner(const Runner &) = delete;
     Runner &operator=(const Runner &) = delete;
@@ -31,7 +32,10 @@ class Runner {
     std::string message() const;
     void play(bool);
     void step();
-    void reset(Config, uint64_t, SeedSettings = {});
+    // Reset uses the loaded field, if any, and the currently applied model parameters.
+    // Otherwise it regenerates a random field with these seed controls.
+    void reset(uint64_t, SeedSettings = {});
+    void randomize(Config, uint64_t, SeedSettings = {});
     void parameters(Config);
     void mode(bool volume);
     void backend(bool gpu, bool cuda = false);
@@ -51,6 +55,8 @@ class Runner {
     std::future<SessionSnapshot> capture(bool pause);
     void set_message(std::string);
     std::unique_ptr<Solver> create(State);
+    void randomize_now(Config, uint64_t, SeedSettings);
+    bool install(State, bool remember_initial);
     mutable std::mutex mutex;
     struct Wake;
     std::unique_ptr<Wake> wake;
@@ -63,6 +69,7 @@ class Runner {
     std::string status = "Starting simulation...";
     // Fields below are accessed only by the worker.
     std::unique_ptr<Solver> sessions[2];
+    SessionStates reset_states; // Immutable starting fields; absent for random initializations.
     std::array<SeedSettings, 2> seed_defaults;
     uint64_t initialization_revision[2]{};
     bool volume = true, use_gpu = false, use_cuda = false, running = false;

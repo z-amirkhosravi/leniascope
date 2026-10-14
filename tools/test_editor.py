@@ -63,7 +63,10 @@ def exercise(root):
             assert b'Field edit v1; parent=' in expected and b'bilinear-zero-extended' in expected
             slot = profile / ('recovery-b' if launch == 0 else 'recovery-a')
             manifest = (slot / 'complete.txt').read_text().split()
-            assert manifest[:6] == ['LeniascopeRecovery', '1', str(launch+2), '1', '1', '0']
+            assert manifest[:6] == ['LeniascopeRecovery', '2', str(launch+2), '1', '1', '0']
+            assert manifest[8:10] == ['1', '0']
+            assert (slot / 'initial-2d.lenia').read_bytes() == expected, 'Edited initial field lost on restart'
+            assert manifest[10] == str(checksum(expected))
             for i, dimension in enumerate((2, 3)):
                 saved = (slot / f'field-{dimension}d.lenia').read_bytes()
                 assert saved == (expected if dimension == 2 else original[1]), 'Apply/restart changed field or history'

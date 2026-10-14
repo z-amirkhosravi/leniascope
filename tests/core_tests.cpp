@@ -194,14 +194,14 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("Runner timeout: " + runner.message());
             };
             await_frame([](const Frame &) { return true; });
-            runner.reset({16, 16, 16, 3}, 123);
+            runner.randomize({16, 16, 16, 3}, 123);
             auto original =
                 await_frame([](const Frame &f) { return f.state.config.width == 16 && f.state.seed == 123; });
             runner.step();
             auto advanced = await_frame([](const Frame &f) { return f.state.steps == 1; });
             require(original->state.steps == 0 && original->state.values != advanced->state.values,
                     "Published snapshot was mutated");
-            runner.reset({16, 16, 1, 3}, 456);
+            runner.randomize({16, 16, 1, 3}, 456);
             await_frame([](const Frame &f) { return f.state.config.depth == 1 && f.state.seed == 456; });
             runner.mode(true);
             auto restored = await_frame([](const Frame &f) { return f.state.config.depth == 16; });
@@ -270,7 +270,7 @@ int main(int argc, char **argv) {
             runner.load("missing-reliability-test-checkpoint.lenia");
             Config cfg{16, 16, 1, 3};
             SeedSettings recipe{23, .8, 1.5, .2, .7};
-            runner.reset(cfg, 987, recipe);
+            runner.randomize(cfg, 987, recipe);
             runner.speed(1);
             runner.step();
             cfg.mu = .21;

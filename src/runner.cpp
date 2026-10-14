@@ -52,12 +52,14 @@ struct Runner::Wake {
     }
 };
 Runner::Runner(bool prefer_gpu, SessionStates initial, bool initial_volume, std::function<void()> notify,
-               std::shared_ptr<GpuContext> display, std::array<SeedSettings, 2> seeds, bool prefer_cuda)
+               std::shared_ptr<GpuContext> display, std::array<SeedSettings, 2> seeds, bool prefer_cuda,
+               SessionStates starting_fields)
     : wake(std::make_unique<Wake>()), display_context(std::move(display)), notify_frame(std::move(notify)) {
     seed_defaults = seeds;
     use_gpu = prefer_gpu;
     use_cuda = prefer_gpu && prefer_cuda;
     volume = initial_volume;
+    reset_states = std::move(starting_fields);
     worker = std::thread([this, initial = std::move(initial)]() mutable {
         loop(std::move(initial));
         std::lock_guard<std::mutex> lock(mutex);
@@ -112,16 +114,35 @@ void Runner::step() {
         publish();
     });
 }
-void Runner::reset(Config c, uint64_t seed, SeedSettings settings) {
-    enqueue([this, c, seed, settings] {
-        auto next = create(random_state(c, seed, settings));
-        if (volume != (c.depth > 1))
-            publish();
-        volume = c.depth > 1;
-        sessions[volume] = std::move(next);
-        ++initialization_revision[volume];
-        ++generation;
-        set_message("Reset from reproducible seed " + std::to_string(seed));
+void Runner::randomize_now(Config c, uint64_t seed, SeedSettings settings) {
+    auto next = create(random_state(c, seed, settings));
+    if (volume != (c.depth > 1))
+        publish();
+    volume = c.depth > 1;
+    sessions[volume] = std::move(next);
+    reset_states[volume].reset();
+    ++initialization_revision[volume];
+    ++generation;
+    set_message("Initialized from reproducible seed " + std::to_string(seed));
+}
+void Runner::randomize(Config c, uint64_t seed, SeedSettings settings) {
+    enqueue([this, c, seed, settings] { randomize_now(c, seed, settings); });
+}
+void Runner::reset(uint64_t seed, SeedSettings settings) {
+    enqueue([this, seed, settings] {
+        // Read on the worker so an immediately preceding Apply changes takes effect
+        // even if the UI has not received its new frame yet.
+        auto config = sessions[volume]->snapshot().config;
+        if (!reset_states[volume]) {
+            randomize_now(config, seed, settings);
+            return;
+        }
+        auto state = *reset_states[volume];
+        state.config = config;
+        bool needs_double = install(std::move(state), false);
+        set_message(needs_double
+                        ? "Reset to initial field with current parameters; CPU preserves float64 values"
+                        : "Reset to initial field; current model parameters retained");
     });
 }
 void Runner::parameters(Config c) {
@@ -184,16 +205,9 @@ void Runner::save(std::string path) {
 void Runner::load(std::string path) {
     enqueue([this, path] {
         auto s = load_state(path);
-        bool v = s.config.depth > 1;
-        auto next = create(std::move(s));
-        if (volume != v)
-            publish();
-        sessions[v] = std::move(next);
-        ++initialization_revision[v];
-        volume = v;
-        ++generation;
         running = false;
-        set_message("Loaded " + path);
+        bool needs_double = install(std::move(s), true);
+        set_message("Loaded initial field " + path + (needs_double ? "; CPU preserves float64 values" : ""));
     });
 }
 std::future<State> Runner::capture_current() {
@@ -211,33 +225,39 @@ std::future<State> Runner::capture_current() {
     });
     return future;
 }
+bool Runner::install(State state, bool remember_initial) {
+    bool v = state.config.depth > 1;
+    auto initial = remember_initial ? std::make_shared<const State>(state) : reset_states[v];
+    bool needs_double = use_gpu && std::any_of(state.values.begin(), state.values.end(),
+                                               [](double a) { return double(float(a)) != a; });
+    std::unique_ptr<Solver> next =
+        needs_double ? std::make_unique<CpuSolver>(std::move(state)) : create(std::move(state));
+    std::unique_ptr<Solver> other;
+    if (needs_double && sessions[!v])
+        other = std::make_unique<CpuSolver>(sessions[!v]->snapshot());
+    if (volume != v)
+        publish();
+    if (needs_double) {
+        sessions[!v] = std::move(other);
+        use_gpu = use_cuda = false;
+    }
+    sessions[v] = std::move(next);
+    reset_states[v] = std::move(initial);
+    ++initialization_revision[v];
+    volume = v;
+    ++generation;
+    publish();
+    return needs_double;
+}
 std::future<void> Runner::restore(State state) {
     auto promise = std::make_shared<std::promise<void>>();
     auto future = promise->get_future();
     enqueue([this, promise, state = std::move(state)]() mutable {
         running = false;
         try {
-            bool v = state.config.depth > 1;
-            bool needs_double = use_gpu && std::any_of(state.values.begin(), state.values.end(),
-                                                       [](double a) { return double(float(a)) != a; });
-            std::unique_ptr<Solver> next =
-                needs_double ? std::make_unique<CpuSolver>(std::move(state)) : create(std::move(state));
-            std::unique_ptr<Solver> other;
-            if (needs_double && sessions[!v])
-                other = std::make_unique<CpuSolver>(sessions[!v]->snapshot());
-            if (volume != v)
-                publish();
-            if (needs_double) {
-                sessions[!v] = std::move(other);
-                use_gpu = use_cuda = false;
-            }
-            sessions[v] = std::move(next);
-            ++initialization_revision[v];
-            volume = v;
-            ++generation;
-            publish();
+            bool needs_double = install(std::move(state), true);
             set_message(needs_double ? "Restored field exactly; CPU selected to preserve float64 values"
-                                     : "Restored field; paused");
+                                     : "Restored initial field; paused");
             promise->set_value();
         } catch (...) {
             promise->set_exception(std::current_exception());
@@ -249,6 +269,7 @@ SessionSnapshot Runner::snapshot_sessions_now() {
     // Worker only: exact, ordered capture on demand, independent of display leases.
     SessionSnapshot result;
     result.volume = volume;
+    result.reset_states = reset_states;
     for (int i = 0; i < 2; ++i)
         if (sessions[i])
             result.states[i] = std::make_shared<State>(sessions[i]->snapshot());
@@ -301,6 +322,7 @@ void Runner::publish(int index) {
     f->running = running && index == int(volume);
     f->gpu = use_gpu;
     f->cuda = use_cuda;
+    f->has_initial_field = bool(reset_states[index]);
     f->steps_per_second = running ? measured_rate : 0;
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -313,6 +335,12 @@ void Runner::publish(int index) {
 void Runner::loop(SessionStates initial) {
     using Clock = std::chrono::steady_clock;
     try {
+        for (int i = 0; i < 2; ++i)
+            if (reset_states[i] &&
+                (!initial[i] || reset_states[i]->config.width != initial[i]->config.width ||
+                 reset_states[i]->config.height != initial[i]->config.height ||
+                 reset_states[i]->config.depth != initial[i]->config.depth))
+                throw std::invalid_argument("Initial field and session dimensions differ");
         if (!initial[volume])
             initial[volume] = std::make_shared<State>(
                 random_state(volume ? Config{} : Config{1024, 1024, 1, 104}, 1, seed_defaults[volume]));

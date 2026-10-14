@@ -578,8 +578,9 @@ void GalleryPanel::draw(Runner &runner, const std::array<ViewSettings, 2> &views
                         load(runner);
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip(
-                            "Loads paused. CPU is selected if required to preserve saved float64 "
-                            "values exactly. The other simulation session is retained.");
+                            "Loads paused and becomes the starting field for Reset. CPU is selected if "
+                            "required to preserve saved float64 values exactly. The other simulation "
+                            "session is retained.");
                     if (ImGui::GetContentRegionAvail().x > 380 * dpi)
                         ImGui::SameLine();
                     ImGui::BeginDisabled(!writable);

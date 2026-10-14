@@ -71,7 +71,11 @@ def exercise(root):
             assert [int(row['step']) for row in rows] == [0, 3, 6, 7]
             assert float(rows[0]['raw_rms']) == 0 and float(rows[0]['aligned_rms']) == 0
             manifest = (profile / 'recovery-b/complete.txt').read_text().split()
-            assert manifest[:6] == ['LeniascopeRecovery', '1', '2', '1', '1', str(active)]
+            assert manifest[:6] == ['LeniascopeRecovery', '2', '2', '1', '1', str(active)]
+            assert manifest[8:10] == [str(int(active==0)), str(int(active==1))]
+            initial = profile / f'recovery-b/initial-{active+2}d.lenia'
+            assert initial.read_bytes() == original[active], 'Gallery field was not retained as Reset initial state'
+            assert str(checksum(initial.read_bytes())) == manifest[10+active]
             for i, dimension in enumerate((2, 3)):
                 assert (profile / f'recovery-b/field-{dimension}d.lenia').read_bytes() == original[i]
             actual = (profile / 'preferences.txt').read_text().splitlines()

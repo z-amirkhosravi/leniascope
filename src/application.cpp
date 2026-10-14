@@ -266,7 +266,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
     Runner runner(
         preferences.gpu, std::move(restored.states), preferences.volume,
         [window] { PostMessageW(window, WM_APP + 1, 0, 0); }, options.cpu_transfer ? nullptr : gpu_context,
-        preferences.seeds, preferences.cuda);
+        preferences.seeds, preferences.cuda, std::move(restored.reset_states));
     runner.speed(preferences.steps_per_second);
     auto &views = preferences.views;
     GalleryPanel gallery(access ? access->directory / L"gallery" : std::filesystem::path{},
@@ -520,11 +520,17 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 runner.step();
             ImGui::SameLine();
             if (ImGui::Button("Reset"))
-                runner.reset(frame ? frame->state.config : edit, seed, seed_settings);
+                runner.reset(seed, seed_settings);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    frame && frame->has_initial_field
+                        ? "Restore the loaded or edited starting field with the current model parameters."
+                        : "Regenerate the random field using the current seed controls and model "
+                          "parameters.");
             ImGui::SameLine();
             if (ImGui::Button("New seed")) {
                 ++seed;
-                runner.reset(frame ? frame->state.config : edit, seed, seed_settings);
+                runner.randomize(frame ? frame->state.config : edit, seed, seed_settings);
             }
             ImGui::SameLine();
             ImGui::SetNextItemWidth(180 * dpi);
@@ -657,13 +663,15 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                     seed_settings.value_min = value_min;
                     seed_settings.value_max = value_max;
                 }
-                ImGui::TextWrapped("Seed controls affect Reset, New seed, and Create grid.");
+                ImGui::TextWrapped(frame && frame->has_initial_field
+                                       ? "Seed controls affect Preview seed, New seed, and Create grid."
+                                       : "Seed controls affect Reset, New seed, and Create grid.");
                 if (ImGui::Button("Ten-patch defaults", {-1, 0}))
                     seed_settings = SeedSettings{};
                 const auto &current = frame ? frame->state.config : edit;
                 if (ImGui::Button("Preview seed (paused)", {-1, 0})) {
                     runner.play(false);
-                    runner.reset(current, seed, seed_settings);
+                    runner.randomize(current, seed, seed_settings);
                 }
                 if (seed_settings.layout == SeedLayout::Uniform) {
                     double coverage = seed_coverage(current, seed_settings);
@@ -692,12 +700,15 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                     "Patch sides: %d..%d cells",
                     std::clamp(int(current.radius * seed_settings.size_min), 1, minimum_side),
                     std::clamp(maximum_side, 1, std::max({current.width, current.height, current.depth})));
-                if (frame && frame->state.initialization &&
-                    frame->state.initialization_radius != current.radius)
+                if (frame && frame->has_initial_field)
+                    ImGui::TextWrapped("Reset restores the loaded or edited starting field and keeps your "
+                                       "applied model parameters.");
+                else if (frame && frame->state.initialization &&
+                         frame->state.initialization_radius != current.radius)
                     ImGui::TextWrapped(
                         "This field was seeded at radius %d. Reset uses the current radius %d.",
                         frame->state.initialization_radius, current.radius);
-                if (frame && !frame->state.initialization)
+                else if (frame && !frame->state.initialization)
                     ImGui::TextWrapped(
                         "This field has no stored seed recipe. Reset uses the controls above.");
                 Config c = edit;
@@ -722,7 +733,7 @@ int run(HINSTANCE instance, int show, const StartupOptions &options) {
                 }
                 ImGui::BeginDisabled(!resize_error.empty());
                 if (ImGui::Button("Create grid", {-1, 0})) {
-                    runner.reset(c, seed, next);
+                    runner.randomize(c, seed, next);
                     dirty_config = false;
                 }
                 ImGui::EndDisabled();

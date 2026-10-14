@@ -166,6 +166,66 @@ void workspace_tests() {
     }
     check(load_state(checkpoint.u8string()).values == snapshot.states[0]->values,
           "Failed manual save damaged the original checkpoint");
+    // Persist immutable initial fields separately from each evolving session, including
+    // parameter changes. Their corruption must invalidate the entire recovery slot.
+    {
+        auto location = directory / "initial-fields";
+        auto anchored = snapshot;
+        anchored.reset_states = snapshot.states;
+        for (int i = 0; i < 2; ++i) {
+            auto evolved = std::make_shared<State>(*snapshot.states[i]);
+            evolved->values[0] = .123;
+            evolved->config.radius = 2;
+            evolved->steps = 50;
+            evolved->time = 5;
+            anchored.states[i] = evolved;
+        }
+        WorkspaceWriter writer(location);
+        writer.request(p, anchored);
+        writer.flush();
+        check(writer.status().error.empty(), "Initial-field recovery write failed");
+        auto loaded = restore_workspace(location);
+        for (int i = 0; i < 2; ++i)
+            check(loaded.states[i]->values == anchored.states[i]->values &&
+                      loaded.states[i]->config.radius == 2 && loaded.reset_states[i] &&
+                      loaded.reset_states[i]->values == snapshot.states[i]->values &&
+                      loaded.reset_states[i]->config.radius == 3,
+                  "Recovery lost initial field or confused it with evolved state/parameters");
+        writer.request(p, anchored);
+        writer.flush();
+        fs::remove(location / "recovery-b" / "initial-3d.lenia");
+        check(restore_workspace(location).revision == 1,
+              "Missing initial field did not invalidate the recovery slot");
+        writer.request(p, anchored);
+        writer.flush();
+        {
+            auto path = location / "recovery-b" / "initial-2d.lenia";
+            std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+            f.seekg(-1, std::ios::end);
+            char byte;
+            f.get(byte);
+            f.seekp(-1, std::ios::end);
+            f.put(byte ^ 1);
+        }
+        check(restore_workspace(location).revision == 1,
+              "Corrupt initial field did not invalidate the recovery slot");
+        auto mismatch = anchored;
+        mismatch.reset_states[0] = std::make_shared<State>(random_state({8, 8, 1, 2}, 1));
+        writer.request(p, mismatch);
+        writer.flush();
+        check(!writer.status().error.empty() && restore_workspace(location).revision == 1,
+              "Incompatible initial-field dimensions replaced a valid recovery");
+        anchored.reset_states = {};
+        for (int i = 0; i < 2; ++i) {
+            writer.request(p, anchored);
+            writer.flush();
+        }
+        loaded = restore_workspace(location);
+        check(writer.status().error.empty() && !loaded.reset_states[0] && !loaded.reset_states[1] &&
+                  !fs::exists(location / "recovery-a/initial-2d.lenia") &&
+                  !fs::exists(location / "recovery-b/initial-3d.lenia"),
+              "Random initialization retained obsolete initial fields on disk");
+    }
     std::cout << "PASS workspace settings, both sessions, checksums, interrupted/corrupt recovery, failed "
                  "writes, shutdown\n";
 }

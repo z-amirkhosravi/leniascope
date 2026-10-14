@@ -74,8 +74,8 @@ void atomic_text(const fs::path &path, const std::string &text) {
     }
 }
 struct Manifest {
-    uint64_t revision = 0, hashes[2]{};
-    bool present[2]{}, volume = true;
+    uint64_t revision = 0, hashes[2]{}, reset_hashes[2]{};
+    bool present[2]{}, reset_present[2]{}, volume = true;
 };
 Manifest manifest(const fs::path &slot) {
     std::istringstream in(read_text(slot / "complete.txt", 1024));
@@ -84,8 +84,13 @@ Manifest manifest(const fs::path &slot) {
     Manifest m;
     if (!(in >> magic >> version >> m.revision >> m.present[0] >> m.present[1] >> m.volume >> m.hashes[0] >>
           m.hashes[1]) ||
-        magic != "LeniascopeRecovery" || version != 1 || !m.revision || !m.present[m.volume])
+        magic != "LeniascopeRecovery" || (version != 1 && version != 2) || !m.revision ||
+        !m.present[m.volume])
         throw std::runtime_error("Invalid recovery manifest");
+    if (version == 2 &&
+        (!(in >> m.reset_present[0] >> m.reset_present[1] >> m.reset_hashes[0] >> m.reset_hashes[1]) ||
+         (m.reset_present[0] && !m.present[0]) || (m.reset_present[1] && !m.present[1])))
+        throw std::runtime_error("Invalid initial-field recovery manifest");
     in >> std::ws;
     if (!in.eof())
         throw std::runtime_error("Unexpected recovery metadata");
@@ -93,6 +98,14 @@ Manifest manifest(const fs::path &slot) {
 }
 fs::path field_path(const fs::path &slot, int mode) {
     return slot / (mode ? "field-3d.lenia" : "field-2d.lenia");
+}
+fs::path reset_path(const fs::path &slot, int mode) {
+    return slot / (mode ? "initial-3d.lenia" : "initial-2d.lenia");
+}
+void validate_initial(const State &initial, const State &current) {
+    if (initial.config.width != current.config.width || initial.config.height != current.config.height ||
+        initial.config.depth != current.config.depth)
+        throw std::runtime_error("Initial field and session dimensions differ");
 }
 void write_recovery(const fs::path &directory, const SessionSnapshot &s, uint64_t revision) {
     if (!s.states[s.volume])
@@ -102,8 +115,14 @@ void write_recovery(const fs::path &directory, const SessionSnapshot &s, uint64_
     // Invalidate the older slot before touching any of its fields. The other complete slot
     // remains recoverable if the process is interrupted or any subsequent write fails.
     fs::remove(slot / "complete.txt");
-    uint64_t hashes[2]{};
+    uint64_t hashes[2]{}, reset_hashes[2]{};
     for (int i = 0; i < 2; ++i) {
+        if (s.reset_states[i] && !s.states[i])
+            throw std::runtime_error("Initial field has no recovery session");
+        auto initial_path = reset_path(slot, i);
+        // A reused slot must not retain an obsolete initial field after New seed.
+        if (!s.reset_states[i])
+            fs::remove(initial_path);
         if (!s.states[i])
             continue;
         if ((s.states[i]->config.depth > 1) != bool(i))
@@ -111,11 +130,20 @@ void write_recovery(const fs::path &directory, const SessionSnapshot &s, uint64_
         auto path = field_path(slot, i);
         save_state(*s.states[i], path.u8string());
         hashes[i] = file_checksum(path);
+        if (s.reset_states[i]) {
+            validate_initial(*s.reset_states[i], *s.states[i]);
+            save_state(*s.reset_states[i], initial_path.u8string());
+            reset_hashes[i] = file_checksum(initial_path);
+        }
     }
+    bool has_initial = s.reset_states[0] || s.reset_states[1];
     std::ostringstream out;
-    out << "LeniascopeRecovery 1\n"
+    out << "LeniascopeRecovery " << (has_initial ? 2 : 1) << '\n'
         << revision << ' ' << bool(s.states[0]) << ' ' << bool(s.states[1]) << ' ' << s.volume << ' '
         << hashes[0] << ' ' << hashes[1] << '\n';
+    if (has_initial)
+        out << bool(s.reset_states[0]) << ' ' << bool(s.reset_states[1]) << ' ' << reset_hashes[0] << ' '
+            << reset_hashes[1] << '\n';
     atomic_text(slot / "complete.txt", out.str());
 }
 } // namespace
@@ -213,7 +241,7 @@ static RestoredWorkspace read_workspace(const fs::path &directory, bool include_
               [](const auto &a, const auto &b) { return a.data.revision > b.data.revision; });
     for (const auto &candidate : candidates) {
         try {
-            SessionStates states;
+            SessionStates states, reset_states;
             for (int i = 0; i < 2; ++i) {
                 if (!candidate.data.present[i])
                     continue;
@@ -223,15 +251,27 @@ static RestoredWorkspace read_workspace(const fs::path &directory, bool include_
                 states[i] = std::make_shared<State>(load_state(path.u8string()));
                 if ((states[i]->config.depth > 1) != bool(i))
                     throw std::runtime_error("Recovery session dimension mismatch");
+                if (candidate.data.reset_present[i]) {
+                    auto initial_path = reset_path(candidate.slot, i);
+                    if (file_checksum(initial_path) != candidate.data.reset_hashes[i])
+                        throw std::runtime_error("Initial-field recovery checksum mismatch");
+                    reset_states[i] = std::make_shared<State>(load_state(initial_path.u8string()));
+                    validate_initial(*reset_states[i], *states[i]);
+                }
             }
             auto current = manifest(candidate.slot);
             if (current.revision != candidate.data.revision ||
                 current.hashes[0] != candidate.data.hashes[0] ||
                 current.hashes[1] != candidate.data.hashes[1] ||
                 current.present[0] != candidate.data.present[0] ||
-                current.present[1] != candidate.data.present[1] || current.volume != candidate.data.volume)
+                current.present[1] != candidate.data.present[1] || current.volume != candidate.data.volume ||
+                current.reset_present[0] != candidate.data.reset_present[0] ||
+                current.reset_present[1] != candidate.data.reset_present[1] ||
+                current.reset_hashes[0] != candidate.data.reset_hashes[0] ||
+                current.reset_hashes[1] != candidate.data.reset_hashes[1])
                 throw std::runtime_error("Recovery changed while being read");
             result.states = std::move(states);
+            result.reset_states = std::move(reset_states);
             result.revision = candidate.data.revision;
             if (!result.states[result.preferences.volume])
                 result.preferences.volume = candidate.data.volume;
